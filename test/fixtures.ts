@@ -91,6 +91,7 @@ export function fakeFetch(opts: { drainerAllowance?: string } = {}) {
     if (p.endsWith(`/addresses/${W}/transactions`)) return json({ items: walletTxs, next_page_params: null });
     if (p.endsWith(`/addresses/${W}/internal-transactions`)) return json({ items: [], next_page_params: null });
     if (p.endsWith(`/addresses/${W}/token-balances`)) return json(balances);
+    if (p.endsWith(`/stats`)) return json({ coin_price: "3000.00" });
     if (p.endsWith(`/addresses/${W}`)) return json({ ...wallet, coin_balance: "1000000000000000000" });
     if (p.endsWith(`/transactions/${h(9)}`)) return json(pullTx);
     if (p.endsWith(`/addresses/${ATTACKER}/token-transfers`)) return json({ items: attackerTransfers, next_page_params: null });

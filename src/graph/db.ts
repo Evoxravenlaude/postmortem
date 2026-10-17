@@ -13,7 +13,7 @@ export async function db(): Promise<FalkorDB> {
   if (!dbPromise) {
     const u = new URL(falkorUrl());
     dbPromise = FalkorDB.connect({
-      socket: { host: u.hostname, port: Number(u.port || 6379), ...(u.protocol === "rediss:" ? { tls: true as const } : {}) },
+      socket: { host: u.hostname, port: Number(u.port || 6379), family: 0, ...(u.protocol === "rediss:" ? { tls: true as const } : {}) },
       username: u.username ? decodeURIComponent(u.username) : undefined,
       password: u.password ? decodeURIComponent(u.password) : undefined,
     }).catch((e) => {

@@ -91,7 +91,7 @@ const wallet_overview = defineTool({
     const totalUsd = holds.reduce((s, h) => s + (h.usd ?? 0), 0);
     const counterparties = ranked.map((r) => ({
       addr: r.node.properties.addr,
-      name: r.node.properties.name ?? r.node.properties.ens ?? null,
+      name: r.node.properties.name ?? r.node.properties.ens ?? r.node.properties.tags?.[0] ?? null,
       tags: r.node.properties.tags ?? null,
       pagerank: Number(r.score.toFixed(4)),
       links: r.links,
@@ -163,7 +163,7 @@ const explain_outflows = defineTool({
         amount: s.amount,
         usdNow: s.usdNow ?? null,
         to: r.d.properties.addr,
-        toName: r.d.properties.name ?? r.d.properties.ens ?? null,
+        toName: r.d.properties.name ?? r.d.properties.ens ?? r.d.properties.tags?.[0] ?? null,
         signer: s.by ?? null,
         calledContract: s.via ?? null,
         approval: r.ap
@@ -282,7 +282,7 @@ const who_can_spend = defineTool({
       if (atRisk > 0) reasons.push(`${fmtAmount(atRisk)} ${tok.symbol} reachable now`);
       const level = !active ? "revoked" : score >= 4 ? "high" : score >= 2 ? "medium" : "low";
       items.push({
-        spender: sp.addr, spenderName: sp.name ?? null, token: ap.token, symbol: tok.symbol, kind: ap.kind,
+        spender: sp.addr, spenderName: sp.name ?? sp.tags?.[0] ?? null, token: ap.token, symbol: tok.symbol, kind: ap.kind,
         grantedAt: isoOf(ap.ts), grantTx: ap.tx, allowance: current, liveChecked: checked, active, unlimited,
         balance: bal, atRisk, atRiskUsd: price != null && Number.isFinite(atRisk) ? atRisk * price : null, lastUsed: last ? isoOf(last) : null,
         risk: level, score, reasons,

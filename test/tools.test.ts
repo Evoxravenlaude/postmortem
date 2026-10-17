@@ -41,6 +41,7 @@ describe("postmortem tools on a local FalkorDB", () => {
     expect(Object.keys(d.totals).sort()).toEqual(["pulled by approval", "sent", "swap"]);
     expect(d.totals["swap"].bySymbol.USDC).toBe(100);
     expect(d.totals["sent"].bySymbol.ETH).toBeCloseTo(0.1);
+    expect(d.totals["sent"].usdNow).toBeCloseTo(300); // 0.1 ETH at the instance's coin price
     const pull = d.pulls[0];
     expect(pull.amount).toBe(900);
     expect(pull.signer).toBe(ATTACKER);

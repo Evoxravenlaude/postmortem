@@ -96,6 +96,17 @@ export class Blockscout {
     }
   }
 
+  /** Current native coin price in USD from the instance's stats endpoint. */
+  async coinPrice(): Promise<number | undefined> {
+    try {
+      const s = await this.get(`/stats`);
+      const v = Number(s.coin_price);
+      return Number.isFinite(v) && v > 0 ? v : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   async nativeBalance(addr: string): Promise<string | null> {
     try {
       const a = await this.get(`/addresses/${addr}`);

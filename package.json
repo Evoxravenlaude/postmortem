@@ -5,7 +5,9 @@
   "type": "module",
   "description": "An agent that explains why your money moved, from a FalkorDB graph of your wallet, and acts on what it finds.",
   "license": "MIT",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "tsx src/server.ts",
     "dev": "tsx watch src/server.ts",
@@ -16,9 +18,12 @@
   "dependencies": {
     "@hono/node-server": "2.1.5",
     "@modelcontextprotocol/sdk": "1.32.1",
+    "dompurify": "^3.1.6",
     "falkordb": "6.8.0",
     "hono": "4.13.13",
+    "marked": "^12.0.2",
     "tsx": "4.21.0",
+    "vis-network": "^9.1.9",
     "zod": "4.6.7"
   },
   "devDependencies": {

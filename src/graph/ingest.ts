@@ -30,14 +30,17 @@ export async function loadWallet(chainKey: string, address: string, opts: LoadOp
   const pages = Math.max(1, Math.min(opts.pages ?? Number(process.env.INGEST_PAGES ?? 6), 40));
   const bs = new Blockscout(chain.blockscout, chain.native, opts.fetchImpl);
 
-  const [tt, tx, it, self, holdings, nativeRaw] = await Promise.all([
+  const [tt, tx, it, self, holdings, nativeRaw, coinPrice] = await Promise.all([
     bs.tokenTransfers(w, pages),
     bs.transactions(w, pages),
     bs.internalTransactions(w, Math.ceil(pages / 2)),
     bs.address(w),
     bs.tokenBalances(w),
     bs.nativeBalance(w),
+    bs.coinPrice(),
   ]);
+  const nativeToken: TokenRef = { addr: "native", symbol: chain.native, decimals: 18, type: "native", priceUsd: coinPrice };
+  for (const t of it.transfers) t.token = nativeToken;
 
   const tokens = new Map<string, TokenRef>();
   for (const t of tt.transfers) tokens.set(t.token.addr, t.token);
@@ -48,7 +51,7 @@ export async function loadWallet(chainKey: string, address: string, opts: LoadOp
   const coverageFrom = tx.complete ? 0 : Math.min(...txs.map((x) => x.ts).filter((t) => t > 0), Number.MAX_SAFE_INTEGER);
 
   const approvals = latestApprovals(txs.map((x) => approvalOf(x, (a) => tokens.get(a))).filter((a): a is Approval => !!a && a.owner === w));
-  const natives = txs.map((x) => nativeTransferOf(x, chain.native)).filter((t): t is Transfer => !!t);
+  const natives = txs.map((x) => nativeTransferOf(x, chain.native)).filter((t): t is Transfer => !!t).map((t) => ({ ...t, token: nativeToken }));
   const transfers = [...tt.transfers, ...natives, ...it.transfers];
 
   // Outflows the wallet did not sign were pulled by someone else. Look up who, newest first.
@@ -62,13 +65,13 @@ export async function loadWallet(chainKey: string, address: string, opts: LoadOp
   const details = (await Promise.all(pulledHashes.map((h) => bs.transaction(h)))).filter((d): d is TxRec => !!d);
 
   const nativeHolding: Holding[] = nativeRaw
-    ? [{ token: { addr: "native", symbol: chain.native, decimals: 18, type: "native" }, raw: nativeRaw, amount: toUnits(nativeRaw, 18) }]
+    ? [{ token: nativeToken, raw: nativeRaw, amount: toUnits(nativeRaw, 18) }]
     : [];
 
   const g = await graphFor(chain.key);
   const q = new Q(g);
   await writeParties(q, [self ?? { addr: w }, ...partiesOf(transfers, [...txs, ...details], approvals)]);
-  await writeTokens(q, [...tokens.values(), { addr: "native", symbol: chain.native, decimals: 18, type: "native" }]);
+  await writeTokens(q, [...tokens.values(), nativeToken]);
   await writeTxs(q, [...txs, ...details]);
   await writeTransfers(q, transfers);
   await writeApprovals(q, approvals);

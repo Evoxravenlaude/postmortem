@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Postmortem</title>
+<meta name="description" content="Why did my money move? An agent reads your wallet as a FalkorDB graph and shows the path behind every answer.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<script src="/vendor/vis-network.min.js"></script>
+<script src="/vendor/marked.min.js"></script>
+<script src="/vendor/purify.min.js"></script>
+<style>
+/* Layout: case bar on top; steps on the left, the evidence (graph, Cypher, data) on the right; report and questions below. */
+:root {
+  --paper: #f4f5f7; --panel: #ffffff; --ink: #15181d; --muted: #5d6573; --line: #dde1e7;
+  --sent: #64748b; --pull: #c62828; --approve: #b7791f; --act: #2f855a; --wallet: #1e3a8a; --tag: #2563eb;
+  --sans: "IBM Plex Sans", system-ui, sans-serif; --cond: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif; --mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --paper: #0f1217; --panel: #161a21; --ink: #e8ebf0; --muted: #98a2b3; --line: #2a303a; --sent: #8a97ab; --pull: #ef5350; --approve: #e0a43a; --act: #48bb78; --wallet: #8fb3ff; --tag: #6aa1ff; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 var(--sans); }
+a { color: inherit; }
+.wrap { max-width: 1320px; margin: 0 auto; padding: 20px max(16px, env(safe-area-inset-right)) 48px max(16px, env(safe-area-inset-left)); display: grid; gap: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+h1 { font: 600 30px/1 var(--cond); letter-spacing: .01em; margin: 0; }
+h1 span { color: var(--pull); }
+.tag { color: var(--muted); max-width: 70ch; margin: 0; }
+.pills { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; font: 12px var(--mono); }
+.pill { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; background: var(--panel); }
+.pill.ok::before { content: "● "; color: var(--act); } .pill.bad::before { content: "● "; color: var(--pull); }
+.case { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+select, input, button, textarea { font: inherit; color: inherit; }
+select, input[type=text] { border: 1px solid var(--line); background: var(--paper); border-radius: 8px; padding: 9px 10px; }
+#address { flex: 1 1 360px; font-family: var(--mono); font-size: 14px; min-width: 0; }
+button { border: 1px solid var(--ink); background: var(--ink); color: var(--paper); border-radius: 8px; padding: 9px 14px; cursor: pointer; font-weight: 600; }
+button.ghost { background: transparent; color: var(--ink); border-color: var(--line); font-weight: 500; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--tag); outline-offset: 2px; }
+.hint { font-size: 13px; color: var(--muted); }
+.grid { display: grid; grid-template-columns: minmax(0, 380px) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.card > h2 { font: 600 13px var(--cond); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#steps { list-style: none; margin: 0; padding: 6px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; max-height: 640px; overflow-y: auto; }
+#steps:empty::after { content: "Steps appear here as the agent works. Each one shows the graph path that backs it."; display: block; padding: 12px; color: var(--muted); font-size: 14px; }
+.step { border: 1px solid transparent; border-radius: 8px; padding: 10px; cursor: pointer; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.step:hover { background: var(--paper); }
+.step.sel { border-color: var(--ink); background: var(--paper); }
+.step .tool { font: 500 12px var(--mono); color: var(--wallet); }
+.step .why { font-size: 13px; color: var(--muted); }
+.step .sum { font-size: 14px; }
+.step.err .sum { color: var(--pull); }
+.step.run .tool::after { content: " · running"; color: var(--muted); animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .step.run .tool::after { animation: none; } }
+.tabs { display: flex; gap: 4px; }
+.tabs button { padding: 4px 10px; font-size: 12px; background: transparent; color: var(--muted); border-color: var(--line); font-weight: 500; }
+.tabs button[aria-pressed=true] { color: var(--ink); border-color: var(--ink); }
+#graph { height: 520px; }
+#cypher, #data { margin: 0; padding: 12px 14px; font: 12.5px/1.55 var(--mono); white-space: pre-wrap; word-break: break-word; max-height: 520px; overflow: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 6px; border-radius: 2px; }
+#pathsel { font-size: 12px; padding: 4px 8px; max-width: 60%; }
+.report { padding: 6px 18px 16px; overflow-x: auto; }
+.report table { border-collapse: collapse; font-size: 13px; }
+.report th, .report td { border-bottom: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+.report code { font: 12px var(--mono); }
+.report:empty::after { content: "The written postmortem lands here when the run finishes."; display: block; padding: 10px 0; color: var(--muted); font-size: 14px; }
+.acts { padding: 0 14px 14px; display: grid; gap: 8px; }
+.act { border: 1px solid var(--line); border-left: 3px solid var(--act); border-radius: 8px; padding: 8px 10px; font-size: 13px; display: grid; gap: 4px; }
+.act code { font: 11.5px var(--mono); word-break: break-all; color: var(--muted); }
+.ask { padding: 12px 14px; display: grid; gap: 8px; }
+.thread { display: grid; gap: 8px; }
+.msg { padding: 8px 12px; border-radius: 8px; font-size: 14px; max-width: 72ch; }
+.msg.user { background: var(--paper); justify-self: end; }
+.msg.bot { border: 1px solid var(--line); }
+.askrow { display: flex; gap: 8px; }
+.askrow input { flex: 1; min-width: 0; }
+.mcp { font: 12px var(--mono); color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Post<span>mortem</span></h1>
+    <p class="tag">Why did my money move? An agent loads your wallet into a FalkorDB graph, walks it to find what drained, pulled or still exposes your funds, shows the path behind every answer, then drafts the fix.</p>
+    <div class="pills" id="pills"><span class="pill">checking…</span></div>
+  </header>
+
+  <form class="case" id="caseform">
+    <select id="chain" aria-label="Chain"></select>
+    <input type="text" id="address" placeholder="0x… wallet address" autocomplete="off" spellcheck="false" aria-label="Wallet address">
+    <button type="submit" id="run">Run postmortem</button>
+    <button type="button" class="ghost" id="example">Try an example</button>
+    <span class="hint" id="note">Reads public chain data only. Nothing is signed or sent.</span>
+  </form>
+
+  <div class="grid">
+    <section class="card" aria-label="Agent steps">
+      <h2>Agent steps <span class="hint" id="stepcount"></span></h2>
+      <ol id="steps"></ol>
+    </section>
+    <section class="card" aria-label="Evidence">
+      <h2>
+        <span>Evidence</span>
+        <select id="pathsel" aria-label="Path"></select>
+        <span class="tabs" role="group" aria-label="View">
+          <button type="button" data-tab="graph" aria-pressed="true">Graph</button>
+          <button type="button" data-tab="cypher" aria-pressed="false">Cypher</button>
+          <button type="button" data-tab="data" aria-pressed="false">Data</button>
+        </span>
+      </h2>
+      <div id="graph"></div>
+      <pre id="cypher" hidden></pre>
+      <pre id="data" hidden></pre>
+      <div class="legend">
+        <span><i style="background:var(--sent)"></i>sent</span>
+        <span><i style="background:var(--pull)"></i>pulled by someone else</span>
+        <span><i style="background:var(--approve)"></i>approval</span>
+        <span><i style="background:var(--muted)"></i>called</span>
+        <span><i style="background:var(--act)"></i>planned fix</span>
+      </div>
+    </section>
+  </div>
+
+  <section class="card" aria-label="Fixes" id="actscard" hidden>
+    <h2>Drafted fixes <span class="hint">sign these from the wallet</span></h2>
+    <div class="acts" id="acts"></div>
+  </section>
+
+  <section class="card" aria-label="Ask">
+    <h2>Ask the graph <span class="hint" id="llmnote"></span></h2>
+    <div class="ask">
+      <div class="thread" id="thread"></div>
+      <form class="askrow" id="askform">
+        <input type="text" id="question" placeholder="Why did my USDC drop in September?  ·  Who can still spend my tokens?  ·  Where did the pulled funds end up?" aria-label="Question">
+        <button type="submit" id="askbtn">Ask</button>
+      </form>
+    </div>
+  </section>
+
+  <section class="card" aria-label="Report">
+    <h2>Postmortem <button type="button" class="ghost" id="copymd" style="padding:4px 10px;font-size:12px">Copy markdown</button></h2>
+    <div class="report" id="report"></div>
+  </section>
+
+  <p class="mcp">MCP: point any MCP client at <span id="mcpurl"></span> (streamable HTTP), or run <code>npm run mcp</code> for stdio.</p>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const state = { steps: [], sel: -1, path: 0, tab: "graph", md: "", history: [], wallet: "", llm: false };
+const short = (a) => (a && a.length > 12 ? a.slice(0, 6) + "…" + a.slice(-4) : a || "");
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+$("#mcpurl").textContent = location.origin + "/mcp";
+
+fetch("/api/health").then((r) => r.json()).then((h) => {
+  $("#chain").replaceChildren(...h.chains.map((c) => new Option(c.name, c.key)));
+  state.llm = !!h.llm;
+  $("#pills").replaceChildren(
+    pill(h.falkordb ? "ok" : "bad", "FalkorDB " + (h.falkordb ? "connected" : "down")),
+    pill(h.llm ? "ok" : "bad", h.llm ? "agent: " + h.llm.model : "no LLM key: autopilot only"),
+    pill("", h.tools.length + " graph tools"),
+  );
+  $("#llmnote").textContent = h.llm ? "the agent picks tools itself" : "needs an LLM key on the server";
+  $("#askbtn").disabled = !h.llm;
+}).catch(() => $("#pills").replaceChildren(pill("bad", "server unreachable")));
+
+function pill(cls, text) { const s = document.createElement("span"); s.className = "pill " + cls; s.textContent = text; return s; }
+
+$("#example").onclick = () => { $("#chain").value = "ethereum"; $("#address").value = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"; };
+
+// ---------- streaming
+async function stream(url, body, onEvent) {
+  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok || !res.body) { const j = await res.json().catch(() => ({})); throw new Error(j.error || res.statusText); }
+  const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read(); if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+      let ev = "message", data = "";
+      for (const line of chunk.split("\n")) { if (line.startsWith("event:")) ev = line.slice(6).trim(); else if (line.startsWith("data:")) data += line.slice(5).trim(); }
+      if (data) onEvent(ev, JSON.parse(data));
+    }
+  }
+}
+
+function onAgentEvent(ev, p) {
+  if (ev === "step-start") { state.steps.push({ ...p, running: true }); renderSteps(); }
+  else if (ev === "step") {
+    const i = state.steps.findIndex((s) => s.running && s.tool === p.tool);
+    if (i >= 0) state.steps[i] = p; else state.steps.push(p);
+    renderSteps();
+    if (p.evidence && p.evidence.paths && p.evidence.paths.length) select(state.steps.indexOf(p));
+    if (p.tool === "plan_revokes" && p.data) renderActs(p.data.actions || []);
+  } else if (ev === "error") { state.steps.push({ tool: "error", summary: "", error: p.error, evidence: { cypher: [], paths: [] } }); renderSteps(); }
+}
+
+$("#caseform").onsubmit = async (e) => {
+  e.preventDefault();
+  const address = $("#address").value.trim(), chain = $("#chain").value;
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) { $("#note").textContent = "That is not a 0x address (42 characters)."; return; }
+  state.steps = []; state.sel = -1; state.wallet = address.toLowerCase(); state.history = []; $("#thread").replaceChildren(); renderSteps(); drawEvidence();
+  $("#report").replaceChildren(); $("#actscard").hidden = true; $("#run").disabled = true; $("#note").textContent = "Working. This takes 10 to 60 seconds on a busy wallet.";
+  try {
+    await stream("/api/run", { chain, address }, (ev, p) => {
+      onAgentEvent(ev, p);
+      if (ev === "answer") { state.md = p.answer; $("#report").innerHTML = DOMPurify.sanitize(marked.parse(p.answer)); }
+    });
+    $("#note").textContent = "Done. Click any step to see its proof.";
+  } catch (err) { $("#note").textContent = err.message; }
+  $("#run").disabled = false;
+};
+
+$("#askform").onsubmit = async (e) => {
+  e.preventDefault();
+  const q = $("#question").value.trim(); if (!q) return;
+  const address = $("#address").value.trim(), chain = $("#chain").value;
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) { $("#note").textContent = "Enter a wallet first."; return; }
+  addMsg("user", q); $("#question").value = ""; $("#askbtn").disabled = true;
+  try {
+    await stream("/api/ask", { chain, address, question: q, history: state.history }, (ev, p) => {
+      onAgentEvent(ev, p);
+      if (ev === "answer") { addMsg("bot", p.answer); state.history.push({ role: "user", content: q }, { role: "assistant", content: p.answer }); }
+    });
+  } catch (err) { addMsg("bot", err.message); }
+  $("#askbtn").disabled = !state.llm;
+};
+
+function addMsg(who, text) {
+  const d = document.createElement("div"); d.className = "msg " + who;
+  if (who === "bot") d.innerHTML = DOMPurify.sanitize(marked.parse(text)); else d.textContent = text;
+  $("#thread").append(d);
+}
+
+$("#copymd").onclick = async () => { try { await navigator.clipboard.writeText(state.md); $("#copymd").textContent = "Copied"; setTimeout(() => ($("#copymd").textContent = "Copy markdown"), 1500); } catch {} };
+
+// ---------- steps
+function renderSteps() {
+  const ol = $("#steps"); ol.replaceChildren();
+  state.steps.forEach((s, i) => {
+    const li = document.createElement("li");
+    li.className = "step" + (i === state.sel ? " sel" : "") + (s.error ? " err" : "") + (s.running ? " run" : "");
+    li.tabIndex = 0;
+    const t = document.createElement("div"); t.className = "tool"; t.textContent = (i + 1) + ". " + s.tool + (s.ms ? "  " + (s.ms / 1000).toFixed(1) + "s" : "");
+    li.append(t);
+    if (s.why) { const w = document.createElement("div"); w.className = "why"; w.textContent = s.why; li.append(w); }
+    const m = document.createElement("div"); m.className = "sum"; m.textContent = s.error ? "Failed: " + s.error : (s.summary || ""); li.append(m);
+    li.onclick = () => select(i); li.onkeydown = (e) => { if (e.key === "Enter") select(i); };
+    ol.append(li);
+  });
+  $("#stepcount").textContent = state.steps.length ? state.steps.length + " step(s)" : "";
+}
+
+function select(i) { state.sel = i; state.path = 0; renderSteps(); drawEvidence(); }
+
+// ---------- evidence
+document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
+  state.tab = b.dataset.tab;
+  document.querySelectorAll(".tabs button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  $("#graph").hidden = state.tab !== "graph"; $("#cypher").hidden = state.tab !== "cypher"; $("#data").hidden = state.tab !== "data";
+  if (state.tab === "graph") drawEvidence();
+});
+$("#pathsel").onchange = () => { state.path = Number($("#pathsel").value); drawEvidence(); };
+
+let network = null;
+function drawEvidence() {
+  const s = state.steps[state.sel];
+  const paths = (s && s.evidence && s.evidence.paths) || [];
+  $("#pathsel").replaceChildren(...paths.map((p, i) => new Option(p.title || "Path " + (i + 1), i)));
+  $("#pathsel").hidden = paths.length < 2; $("#pathsel").value = String(state.path);
+  $("#cypher").textContent = s ? (s.evidence.cypher || []).join("\n\n") || "No queries." : "";
+  $("#data").textContent = s ? JSON.stringify(s.data ?? s.error ?? null, null, 2) : "";
+  const p = paths[state.path];
+  const el = $("#graph");
+  if (network) { network.destroy(); network = null; }
+  if (!p || !window.vis) { el.innerHTML = '<p class="hint" style="padding:14px">' + (s ? "This step has no graph path. See the Cypher and Data tabs." : "Pick a step to see the graph behind it.") + "</p>"; return; }
+  const ink = css("--ink"), muted = css("--muted"), panel = css("--panel");
+  const nodes = p.nodes.map((n) => {
+    const isWallet = n.id === state.wallet || (n.props && n.props.wallet);
+    const tagged = n.props && n.props.tags && n.props.tags.length;
+    const unverified = n.props && n.props.isContract && n.props.verified === false;
+    const label = (n.label === "Action" ? "revoke" : n.label === "Report" ? "report" : (n.name || (n.props && n.props.tags && n.props.tags[0]) || short(n.id)));
+    return {
+      id: n.id, label,
+      title: n.id + (n.props && n.props.tags ? "\n" + n.props.tags.join(", ") : ""),
+      shape: isWallet ? "star" : n.label === "Action" ? "hexagon" : n.label === "Report" ? "square" : n.props && n.props.isContract ? "box" : "dot",
+      size: isWallet ? 26 : 14,
+      color: { background: isWallet ? css("--wallet") : n.label === "Action" ? css("--act") : tagged ? css("--tag") : panel, border: unverified ? css("--pull") : isWallet ? css("--wallet") : muted },
+      font: { color: n.props && n.props.isContract && !isWallet && n.label !== "Action" ? ink : ink, face: "IBM Plex Sans", size: 13 },
+      borderWidth: unverified ? 3 : 1.5,
+    };
+  });
+  const edges = p.edges.map((e, i) => {
+    const pr = e.props || {};
+    const pulled = e.type === "SENT" && pr.by && pr.by !== state.wallet && e.from === state.wallet;
+    const color = e.type === "APPROVED" ? css("--approve") : e.type === "CALLED" ? muted : (e.type === "PLANNED" || e.type === "REVOKES") ? css("--act") : pulled ? css("--pull") : css("--sent");
+    const amt = typeof pr.amount === "number" ? (pr.amount >= 1000 ? pr.amount.toLocaleString("en-US", { maximumFractionDigits: 0 }) : +pr.amount.toPrecision(4)) : "";
+    const date = pr.ts ? new Date(pr.ts * 1000).toISOString().slice(0, 10) : "";
+    const label = e.type === "SENT" ? `${amt} ${pr.symbol || ""}\n${date}` : e.type === "APPROVED" ? `approve ${pr.unlimited ? "∞" : ""} ${pr.symbol || ""}\n${date}` : e.type === "CALLED" ? (pr.method || "call") : e.type.toLowerCase();
+    return { id: i, from: e.from, to: e.to, arrows: "to", label, color: { color, highlight: color }, width: pulled || (e.type === "APPROVED" && pr.unlimited) ? 3 : 1.5, dashes: e.type === "APPROVED", font: { size: 11, color: muted, strokeWidth: 3, strokeColor: panel, face: "IBM Plex Mono", align: "middle" }, smooth: { type: "curvedCW", roundness: 0.12 } };
+  });
+  el.innerHTML = "";
+  network = new vis.Network(el, { nodes, edges }, { physics: { solver: "forceAtlas2Based", stabilization: { iterations: 200 } }, interaction: { hover: true }, layout: { randomSeed: 7 } });
+}
+
+function renderActs(actions) {
+  const box = $("#acts"); box.replaceChildren();
+  $("#actscard").hidden = !actions.length;
+  for (const a of actions) {
+    const d = document.createElement("div"); d.className = "act";
+    const h = document.createElement("div"); h.textContent = `${a.fn} · ${a.symbol} → ${a.spenderName || short(a.spender)}${a.risk ? " · " + a.risk + " risk" : ""}`;
+    const c = document.createElement("code"); c.textContent = JSON.stringify(a.tx);
+    const b = document.createElement("button"); b.type = "button"; b.className = "ghost"; b.style.cssText = "justify-self:start;padding:3px 10px;font-size:12px"; b.textContent = "Copy transaction";
+    b.onclick = async () => { try { await navigator.clipboard.writeText(JSON.stringify(a.tx, null, 2)); b.textContent = "Copied"; } catch { b.textContent = "Select the text above"; } };
+    d.append(h, c, b); box.append(d);
+  }
+}
+</script>
+</body>
+</html>
