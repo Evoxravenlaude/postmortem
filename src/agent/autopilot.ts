@@ -33,7 +33,7 @@ export async function autopilot(chain: string, address: string, ctx: ToolCtx = {
   }
   await step("wallet_overview", { chain, address: w }, "Get the shape of the wallet and its central counterparties.");
   const out = await step("explain_outflows", { chain, address: w }, "Classify every outflow by walking who signed it and which approval allowed it.");
-  const pulls = ((out.data as any)?.pulls ?? []) as any[];
+  const pulls = (((out.data as any)?.pulls ?? []) as any[]).filter((p) => (p.usdNow ?? 0) > 0);
   if (pulls.length) {
     const biggest = [...pulls].sort((a, b) => (b.usdNow ?? 0) - (a.usdNow ?? 0))[0];
     if (biggest?.token && biggest.token !== "native")

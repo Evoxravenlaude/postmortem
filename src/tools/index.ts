@@ -111,7 +111,7 @@ const wallet_overview = defineTool({
 });
 
 // ---------------------------------------------------------------- explain_outflows
-type Cause = "swap" | "sent" | "contract call" | "pulled by approval" | "pulled (signer not looked up)" | "older than loaded history";
+type Cause = "swap" | "sent" | "contract call" | "pulled by approval" | "pulled (signer not looked up)" | "unpriced token moved by others (often spam)" | "older than loaded history";
 
 const explain_outflows = defineTool({
   name: "explain_outflows",
@@ -152,6 +152,7 @@ const explain_outflows = defineTool({
       const s = r.s.properties;
       let cause: Cause;
       if (s.by === w || s.kind === "native") cause = r.back > 0 ? "swap" : r.d.properties.isContract ? "contract call" : "sent";
+      else if (s.usdNow == null && (s.by || s.ts >= cov)) cause = "unpriced token moved by others (often spam)";
       else if (s.by) cause = "pulled by approval";
       else if (s.ts >= cov) cause = "pulled (signer not looked up)";
       else cause = "older than loaded history";
@@ -208,7 +209,7 @@ const explain_outflows = defineTool({
           ? `No outflows from ${short(w)} in that window.`
           : `${events.length} outflows from ${short(w)}. ${parts.join("; ")}. Gas: ${fmtAmount(gasNative)} ${chainOf(c).native} across ${gas?.n ?? 0} signed transactions.` +
             (pulls.length ? ` ${pulls.length} pull(s) trace back to an approval; see the paths.` : ""),
-      data: { window: { from: isoOf(from), to: isoOf(to) }, totals, gas: { native: gasNative, txs: gas?.n ?? 0 }, biggest, pulls: events.filter((e) => e.cause.startsWith("pulled")) },
+      data: { window: { from: isoOf(from), to: isoOf(to) }, totals, gas: { native: gasNative, txs: gas?.n ?? 0 }, biggest, pulls: events.filter((e) => e.cause.startsWith("pulled")), spamLike: events.filter((e) => e.cause.startsWith("unpriced")).length },
       evidence: { cypher: qq.log, paths: views },
     };
   },
@@ -234,9 +235,9 @@ const who_can_spend = defineTool({
     );
     const uses = await qq.ro<{ sp: string; last: number }>(`MATCH (w:Address {addr:$w})-[c:CALLED]->(sp:Address) RETURN sp.addr AS sp, max(c.ts) AS last`, { w });
     const lastUse = new Map(uses.map((u) => [u.sp, u.last]));
-    const pullsRows = await qq.ro<{ sp: string; tok: string; n: number; amt: number }>(
+    const pullsRows = await qq.ro<{ sp: string; tok: string; n: number; amt: number; usd: number | null }>(
       `MATCH (w:Address {addr:$w})-[s:SENT]->() WHERE s.by IS NOT NULL AND s.by <> $w
-       RETURN coalesce(s.via, s.by) AS sp, s.token AS tok, count(s) AS n, sum(s.amount) AS amt`,
+       RETURN coalesce(s.via, s.by) AS sp, s.token AS tok, count(s) AS n, sum(s.amount) AS amt, sum(s.usdNow) AS usd`,
       { w },
     );
     const pulls = new Map(pullsRows.map((p) => [`${p.sp}|${p.tok}`, p]));
@@ -271,22 +272,31 @@ const who_can_spend = defineTool({
       const price = tok.priceUsd ?? null;
       const tags: string[] = sp.tags ?? [];
       const reasons: string[] = [];
+      // Score the spender first, then the exposure. A famous verified router on a worthless token is not an emergency.
       let score = 0;
       const unlimited = ap.kind === "all" ? active : current ? BigInt(current) >= 2n ** 128n : false;
-      if (unlimited) (score += 3), reasons.push("unlimited approval");
+      const usdAtRisk = price != null && Number.isFinite(atRisk) ? atRisk * price : null;
+      if (tags.some((t) => /phish|scam|exploit|drain|hack/i.test(t))) (score += 5), reasons.push(`spender tagged: ${tags.join(", ")}`);
       if (sp.isContract === false) (score += 3), reasons.push("spender is a plain account, not a contract");
       else if (sp.verified === false) (score += 2), reasons.push("spender contract is not verified");
-      if (tags.some((t) => /phish|scam|exploit|drain|hack/i.test(t))) (score += 5), reasons.push(`spender tagged: ${tags.join(", ")}`);
+      const pulled = pulls.get(`${sp.addr}|${ap.token}`);
+      if (pulled && (pulled.usd ?? 0) > 0) (score += 2), reasons.push(`has pulled ${fmtAmount(pulled.amt)} ${tok.symbol} without the wallet signing`);
+      else if (pulled) reasons.push(`moved ${fmtAmount(pulled.amt)} ${tok.symbol} before (no market price)`);
+      if (unlimited) (score += 2), reasons.push("unlimited approval");
       const last = lastUse.get(sp.addr);
       if (!last || now - last > 90 * 86400) (score += 1), reasons.push(last ? `unused for ${Math.floor((now - last) / 86400)} days` : "never called by this wallet");
-      const pulled = pulls.get(`${sp.addr}|${ap.token}`);
-      if (pulled) reasons.push(`has pulled ${fmtAmount(pulled.amt)} ${tok.symbol} in ${pulled.n} tx before`);
-      if (atRisk > 0) reasons.push(`${fmtAmount(atRisk)} ${tok.symbol} reachable now`);
-      const level = !active ? "revoked" : score >= 4 ? "high" : score >= 2 ? "medium" : "low";
+      if (usdAtRisk != null && usdAtRisk >= 1000) (score += 2), reasons.push(`${fmtUsd(usdAtRisk)} reachable now`);
+      else if (usdAtRisk != null && usdAtRisk >= 100) (score += 1), reasons.push(`${fmtUsd(usdAtRisk)} reachable now`);
+      else if (atRisk > 0 && Number.isFinite(atRisk)) reasons.push(`${fmtAmount(atRisk)} ${tok.symbol} reachable now${usdAtRisk == null ? " (no market price)" : ""}`);
+      else reasons.push("nothing reachable right now");
+      const suspectSpender = score >= 2 && (sp.isContract === false || sp.verified === false || tags.length > 0 || (pulled?.usd ?? 0) > 0);
+      let level = !active ? "revoked" : score >= 5 ? "high" : score >= 3 ? "medium" : "low";
+      // Nothing of value reachable and a reputable spender: keep it on the list, but not as urgent.
+      if (active && !suspectSpender && !(usdAtRisk != null && usdAtRisk >= 100)) level = "low";
       items.push({
         spender: sp.addr, spenderName: sp.name ?? sp.tags?.[0] ?? null, token: ap.token, symbol: tok.symbol, kind: ap.kind,
         grantedAt: isoOf(ap.ts), grantTx: ap.tx, allowance: current, liveChecked: checked, active, unlimited,
-        balance: bal, atRisk, atRiskUsd: price != null && Number.isFinite(atRisk) ? atRisk * price : null, lastUsed: last ? isoOf(last) : null,
+        balance: bal, atRisk, atRiskUsd: usdAtRisk, lastUsed: last ? isoOf(last) : null,
         risk: level, score, reasons,
       });
       if (checked)
@@ -529,6 +539,7 @@ const write_postmortem = defineTool({
         );
       lines.push("");
     }
+    if (o.spamLike > 0) lines.push(`${o.spamLike} movement(s) of tokens with no market price were made by others. These are usually spam tokens that fake transfers from well-known wallets, so they are listed separately and not treated as losses.`, "");
     lines.push("## Still exposed", "", exp.summary, "");
     const risky = (e.approvals as any[]).filter((x) => x.risk === "high" || x.risk === "medium");
     if (risky.length) {

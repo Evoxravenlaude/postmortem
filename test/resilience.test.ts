@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeDb, db, graphName } from "../src/graph/db.js";
 import { runTool } from "../src/tools/index.js";
-import { T, W, fakeFetch } from "./fixtures.js";
+import { DRAINER, ROUTER, SPAM, T, W, fakeFetch } from "./fixtures.js";
 
 process.env.GRAPH_PREFIX = "pmresil";
 process.env.FALKORDB_URL ??= "redis://127.0.0.1:6390";
@@ -38,5 +38,20 @@ describe("explorer failures on busy wallets", () => {
     expect(d.complete.txs).toBe(false);
     expect(d.coverageFrom).toBeGreaterThan(0);
     expect(d.warnings.join(" ")).toMatch(/transactions stopped early/);
+  });
+
+  it("does not call a spam token's fake transfer a pull, or a verified router with nothing at risk high risk", async (t) => {
+    if (!up) return t.skip();
+    const ctx = { fetchImpl: fakeFetch({ withSpam: true }).fn as any, now: () => T(400 * 86400) };
+    await runTool("load_wallet", { chain: "ethereum", address: W }, ctx);
+    const out = (await runTool("explain_outflows", { chain: "ethereum", address: W }, ctx)).data as any;
+    expect(out.totals["unpriced token moved by others (often spam)"].events).toBe(1);
+    expect(out.pulls.every((p: any) => p.symbol !== "FREEMOON")).toBe(true);
+    expect(out.totals["pulled by approval"].bySymbol.USDC).toBe(900);
+    const exp = (await runTool("who_can_spend", { chain: "ethereum", address: W }, ctx)).data as any;
+    const routerSpam = exp.approvals.find((a: any) => a.spender === ROUTER && a.token === SPAM);
+    expect(routerSpam.unlimited).toBe(true);
+    expect(routerSpam.risk).toBe("low");
+    expect(exp.approvals.find((a: any) => a.spender === DRAINER).risk).toBe("high");
   });
 });
