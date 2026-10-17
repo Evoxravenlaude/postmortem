@@ -20,6 +20,7 @@ export interface LoadReport {
   pulledLookups: number;
   coverageFrom: number; // oldest timestamp the wallet's own transaction list covers (0 = full history)
   complete: { transfers: boolean; txs: boolean };
+  warnings: string[]; // parts the explorer could not serve; the load continued without them
   cypher: string[];
 }
 
@@ -30,15 +31,29 @@ export async function loadWallet(chainKey: string, address: string, opts: LoadOp
   const pages = Math.max(1, Math.min(opts.pages ?? Number(process.env.INGEST_PAGES ?? 6), 40));
   const bs = new Blockscout(chain.blockscout, chain.native, opts.fetchImpl);
 
+  // Transfers and the wallet's own transactions are required. Everything else is optional:
+  // if the explorer times out on it, the load goes on and says what was skipped.
+  const warnings: string[] = [];
+  const soft = async <T,>(label: string, p: Promise<T>, fallback: T): Promise<T> => {
+    try {
+      return await p;
+    } catch (e: any) {
+      warnings.push(`${label} skipped: ${String(e?.message ?? e)}`);
+      return fallback;
+    }
+  };
   const [tt, tx, it, self, holdings, nativeRaw, coinPrice] = await Promise.all([
     bs.tokenTransfers(w, pages),
     bs.transactions(w, pages),
-    bs.internalTransactions(w, Math.ceil(pages / 2)),
+    soft("internal transfers", bs.internalTransactions(w, Math.ceil(pages / 2)), { transfers: [] as Transfer[], complete: false, error: undefined as string | undefined }),
     bs.address(w),
     bs.tokenBalances(w),
     bs.nativeBalance(w),
     bs.coinPrice(),
   ]);
+  if (tt.error) warnings.push(`token transfers stopped early: ${tt.error}`);
+  if (tx.error) warnings.push(`transactions stopped early: ${tx.error}`);
+  if (it.error) warnings.push(`internal transfers stopped early: ${it.error}`);
   const nativeToken: TokenRef = { addr: "native", symbol: chain.native, decimals: 18, type: "native", priceUsd: coinPrice };
   for (const t of it.transfers) t.token = nativeToken;
 
@@ -92,6 +107,7 @@ export async function loadWallet(chainKey: string, address: string, opts: LoadOp
     pulledLookups: details.length,
     coverageFrom: coverageFrom === Number.MAX_SAFE_INTEGER ? 0 : coverageFrom,
     complete: { transfers: tt.complete, txs: tx.complete },
+    warnings,
     cypher: q.log,
   };
 }

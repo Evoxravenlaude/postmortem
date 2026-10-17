@@ -68,7 +68,7 @@ export const balances = [
 ];
 
 /** Routes Blockscout and RPC calls to the fixtures above. */
-export function fakeFetch(opts: { drainerAllowance?: string } = {}) {
+export function fakeFetch(opts: { drainerAllowance?: string; internalFails?: boolean; txPage2Fails?: boolean } = {}) {
   const calls: string[] = [];
   const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { "content-type": "application/json" } });
   const fn = async (url: string, init?: RequestInit): Promise<Response> => {
@@ -88,8 +88,12 @@ export function fakeFetch(opts: { drainerAllowance?: string } = {}) {
     const u = new URL(url);
     const p = u.pathname;
     if (p.endsWith(`/addresses/${W}/token-transfers`)) return json({ items: walletTransfers, next_page_params: null });
-    if (p.endsWith(`/addresses/${W}/transactions`)) return json({ items: walletTxs, next_page_params: null });
-    if (p.endsWith(`/addresses/${W}/internal-transactions`)) return json({ items: [], next_page_params: null });
+    if (p.endsWith(`/addresses/${W}/transactions`)) {
+      if (!opts.txPage2Fails) return json({ items: walletTxs, next_page_params: null });
+      if (u.searchParams.has("block_number")) return new Response("timeout", { status: 524 });
+      return json({ items: walletTxs.slice(1), next_page_params: { block_number: 1, index: 0 } });
+    }
+    if (p.endsWith(`/addresses/${W}/internal-transactions`)) return opts.internalFails ? new Response("timeout", { status: 524 }) : json({ items: [], next_page_params: null });
     if (p.endsWith(`/addresses/${W}/token-balances`)) return json(balances);
     if (p.endsWith(`/stats`)) return json({ coin_price: "3000.00" });
     if (p.endsWith(`/addresses/${W}`)) return json({ ...wallet, coin_balance: "1000000000000000000" });

@@ -13,33 +13,45 @@ export class Blockscout {
     private apiKey = process.env.BLOCKSCOUT_API_KEY,
   ) {}
 
-  private async get(path: string, params: Record<string, string | number | undefined> = {}): Promise<Json> {
+  private timeoutMs = Number(process.env.BLOCKSCOUT_TIMEOUT_MS ?? 25000);
+
+  /** One request with a hard timeout. Rate limits and 5xx (including Cloudflare 52x) are retried once. */
+  private async get(path: string, params: Record<string, string | number | undefined> = {}, attempts = 2): Promise<Json> {
     const u = new URL(this.base.replace(/\/$/, "") + path);
     for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== "") u.searchParams.set(k, String(v));
     if (this.apiKey) u.searchParams.set("apikey", this.apiKey);
     let last: unknown;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
       try {
-        const res = await this.fetchImpl(u.toString(), { headers: { accept: "application/json" } });
+        const res = await this.fetchImpl(u.toString(), { headers: { accept: "application/json" }, signal: AbortSignal.timeout(this.timeoutMs) });
         if (res.status === 429 || res.status >= 500) throw new Error(`Blockscout ${res.status} on ${u.pathname}`);
         if (!res.ok) throw Object.assign(new Error(`Blockscout ${res.status} on ${u.pathname}`), { fatal: true });
         return (await res.json()) as Json;
       } catch (e: any) {
-        last = e;
+        last = e?.name === "TimeoutError" ? new Error(`Blockscout timed out after ${Math.round(this.timeoutMs / 1000)}s on ${u.pathname}`) : e;
         if (e?.fatal) throw e;
-        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+        if (attempt + 1 < attempts) await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
       }
     }
     throw last;
   }
 
-  /** Follows next_page_params until it runs out or maxPages is reached. */
-  async paged(path: string, params: Record<string, string | number | undefined>, maxPages: number): Promise<{ items: Json[]; complete: boolean }> {
+  /**
+   * Follows next_page_params until it runs out or maxPages is reached. If a later page fails,
+   * the pages already fetched are kept and the result is marked incomplete; only a failing first page throws.
+   */
+  async paged(path: string, params: Record<string, string | number | undefined>, maxPages: number): Promise<{ items: Json[]; complete: boolean; error?: string }> {
     const items: Json[] = [];
     let next: Record<string, any> | null = {};
     let pages = 0;
     while (next && pages < maxPages) {
-      const page = await this.get(path, { ...params, ...next });
+      let page: Json;
+      try {
+        page = await this.get(path, { ...params, ...next });
+      } catch (e: any) {
+        if (pages === 0) throw e;
+        return { items, complete: false, error: String(e?.message ?? e) };
+      }
       items.push(...((page.items as Json[]) ?? []));
       next = page.next_page_params ?? null;
       pages++;
@@ -48,18 +60,18 @@ export class Blockscout {
   }
 
   async tokenTransfers(addr: string, maxPages: number, opts: { filter?: "to" | "from"; token?: string } = {}) {
-    const { items, complete } = await this.paged(`/addresses/${addr}/token-transfers`, { type: "ERC-20,ERC-721,ERC-1155", filter: opts.filter, token: opts.token }, maxPages);
-    return { transfers: items.map((i) => normTokenTransfer(i)).filter((t): t is Transfer => !!t), complete };
+    const { items, complete, error } = await this.paged(`/addresses/${addr}/token-transfers`, { type: "ERC-20,ERC-721,ERC-1155", filter: opts.filter, token: opts.token }, maxPages);
+    return { transfers: items.map((i) => normTokenTransfer(i)).filter((t): t is Transfer => !!t), complete, error };
   }
 
   async transactions(addr: string, maxPages: number) {
-    const { items, complete } = await this.paged(`/addresses/${addr}/transactions`, {}, maxPages);
-    return { txs: items.map((i) => normTx(i)), complete };
+    const { items, complete, error } = await this.paged(`/addresses/${addr}/transactions`, {}, maxPages);
+    return { txs: items.map((i) => normTx(i)), complete, error };
   }
 
   async internalTransactions(addr: string, maxPages: number) {
-    const { items, complete } = await this.paged(`/addresses/${addr}/internal-transactions`, {}, maxPages);
-    return { transfers: items.map((i, n) => normInternal(i, n, this.native)).filter((t): t is Transfer => !!t), complete };
+    const { items, complete, error } = await this.paged(`/addresses/${addr}/internal-transactions`, {}, maxPages);
+    return { transfers: items.map((i, n) => normInternal(i, n, this.native)).filter((t): t is Transfer => !!t), complete, error };
   }
 
   async transaction(hash: string): Promise<TxRec | null> {

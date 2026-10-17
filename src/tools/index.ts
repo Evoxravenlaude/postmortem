@@ -53,7 +53,9 @@ const load_wallet = defineTool({
     const r = await loadWallet(c, need(a), { pages, fetchImpl: ctx.fetchImpl });
     const cov = r.coverageFrom ? `back to ${isoOf(r.coverageFrom).slice(0, 10)}` : "full history";
     return {
-      summary: `Loaded ${r.transfers} movements, ${r.txs} transactions, ${r.approvals} approvals and ${r.holdings} balances for ${short(r.wallet)} on ${r.chain} (${cov}). Looked up the signer of ${r.pulledLookups} outflows the wallet did not sign.`,
+      summary:
+        `Loaded ${r.transfers} movements, ${r.txs} transactions, ${r.approvals} approvals and ${r.holdings} balances for ${short(r.wallet)} on ${r.chain} (${cov}). Looked up the signer of ${r.pulledLookups} outflows the wallet did not sign.` +
+        (r.warnings.length ? ` Note: ${r.warnings.join("; ")}.` : ""),
       data: r,
       evidence: { cypher: r.cypher.slice(0, 12), paths: [] },
     };
