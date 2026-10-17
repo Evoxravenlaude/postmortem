@@ -171,6 +171,7 @@ fetch("/api/health").then((r) => r.json()).then((h) => {
 
 function pill(cls, text) { const s = document.createElement("span"); s.className = "pill " + cls; s.textContent = text; return s; }
 
+{ const u = new URLSearchParams(location.search); if (u.get("address")) $("#address").value = u.get("address"); if (u.get("chain")) setTimeout(() => ($("#chain").value = u.get("chain")), 300); }
 $("#example").onclick = () => { $("#chain").value = "ethereum"; $("#address").value = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"; };
 
 // ---------- streaming
