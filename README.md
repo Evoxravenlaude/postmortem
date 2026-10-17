@@ -55,19 +55,35 @@ graph LR
 - **Ask the graph** uses any OpenAI-compatible model with tool calling (Gemini, OpenAI, OpenRouter, Groq). The model chooses tools from their descriptions; the UI shows each tool call with its Cypher and its path.
 - **MCP:** the same nine tools are served over MCP at `/mcp` (streamable HTTP) and over stdio (`npm run mcp`), so Claude Desktop, Cursor or any MCP client can pick them.
 
-## Run it locally
+## Run it
+
+**Everything in one command (Docker):**
 
 ```bash
-docker run -p 6379:6379 -it --rm falkordb/falkordb:latest
-cp .env.example .env        # add GEMINI_API_KEY or another key if you want "Ask the graph"
+cp .env.example .env        # optional: add GEMINI_API_KEY for "Ask the graph"
+docker compose up --build   # app on http://localhost:8787, FalkorDB browser on http://localhost:3000
+```
+
+**Without Docker for the app:**
+
+```bash
+docker run -p 6379:6379 -d falkordb/falkordb:latest
+cp .env.example .env
 npm install
 npm run local               # http://localhost:8787
 ```
 
-Tests run against a real FalkorDB (they skip if none is reachable) on a synthetic wallet in Blockscout's response shapes:
+**Check live data before a demo.** This is read-only: it calls Blockscout, the chain RPC and FalkorDB and prints PASS or FAIL for each.
+
+```bash
+npm run smoke -- ethereum 0xYourWallet
+```
+
+**Tests** run against a real FalkorDB (they skip if none is reachable) on a synthetic wallet in Blockscout's response shapes. CI runs them on every push with a FalkorDB service container.
 
 ```bash
 FALKORDB_URL=redis://127.0.0.1:6379 npm test   # 11 tests
+npm run typecheck
 ```
 
 ### MCP client config (stdio)
@@ -90,6 +106,9 @@ FALKORDB_URL=redis://127.0.0.1:6379 npm test   # 11 tests
 2. New service from this GitHub repo. `railway.json` sets the start command and health check.
 3. On the app service, set `FALKORDB_URL=redis://${{FalkorDB.RAILWAY_PRIVATE_DOMAIN}}:6379` and, optionally, `GEMINI_API_KEY`.
 4. Generate a domain for the app service. `/api/health` should show `"falkordb": true`.
+5. Open the app service's shell (or run locally with the same env) and run `npm run smoke -- ethereum 0xYourWallet` once.
+
+The `Dockerfile` also runs anywhere that takes a container (Fly.io, Render, a VPS); point `FALKORDB_URL` at your FalkorDB.
 
 FalkorDB Cloud works too: set `FALKORDB_URL=rediss://default:<password>@<host>:<port>`.
 
@@ -100,6 +119,26 @@ FalkorDB Cloud works too: set `FALKORDB_URL=rediss://default:<password>@<host>:<
 - History is paged (300 items per list by default). Outflows older than the loaded transaction history are marked as such instead of being guessed.
 - Dollar values use today's price from the explorer, not the price on the day of the transfer.
 - Data comes from public Blockscout instances and public RPCs, which rate-limit. Busy wallets take longer.
+
+## Configuration
+
+All settings are environment variables; `.env.example` lists them with defaults. The ones that matter: `FALKORDB_URL`, one LLM key (`GEMINI_API_KEY`, `OPENAI_API_KEY` or `LLM_API_KEY` + `LLM_BASE_URL`), `LLM_MODEL`, `INGEST_PAGES`, `RUNS_PER_HOUR`, and per-chain `BLOCKSCOUT_<CHAIN>` / `RPC_<CHAIN>` overrides.
+
+## Project layout
+
+```
+src/
+  server.ts            web app, SSE streams, /mcp endpoint, health check
+  mcp.ts, mcp-stdio.ts MCP server (streamable HTTP and stdio)
+  agent/               LLM tool loop, no-LLM autopilot, model config
+  tools/index.ts       the nine graph tools
+  graph/               FalkorDB connection, ingest, path views
+  sources/             Blockscout API v2 and JSON-RPC readers
+public/index.html      the UI (vendor libraries served from /vendor)
+scripts/smoke.ts       live connectivity check
+test/                  synthetic fixtures and tests
+docs/                  demo plan and submission notes
+```
 
 ## Stack
 

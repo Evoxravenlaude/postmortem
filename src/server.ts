@@ -8,7 +8,7 @@ import { ask, type Step } from "./agent/agent.js";
 import { autopilot } from "./agent/autopilot.js";
 import { chatFn, llmFromEnv, type Msg } from "./agent/llm.js";
 import { chains, chainOf } from "./chains.js";
-import { db, graphFor, Q } from "./graph/db.js";
+import { closeDb, db, graphFor, Q } from "./graph/db.js";
 import { createMcpServer } from "./mcp.js";
 import { TOOLS, runTool } from "./tools/index.js";
 import { isAddress, lc } from "./util.js";
@@ -163,7 +163,15 @@ app.all("/mcp", async (c) => {
 });
 
 const port = Number(process.env.PORT ?? 8787);
-serve({ fetch: app.fetch, port }, () => console.log(`postmortem listening on :${port}`));
+const httpServer = serve({ fetch: app.fetch, port }, () => console.log(`postmortem listening on :${port}`));
+
+// Let in-flight runs finish and close the FalkorDB connection when the platform stops the container.
+for (const sig of ["SIGTERM", "SIGINT"] as const)
+  process.on(sig, () => {
+    console.log(`${sig}: shutting down`);
+    httpServer.close(() => void closeDb().finally(() => process.exit(0)));
+    setTimeout(() => process.exit(0), 10_000).unref();
+  });
 
 export type { Step };
 export default app;
