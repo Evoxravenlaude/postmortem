@@ -4,9 +4,10 @@
 
 Built for Graph Hacks (FalkorDB x WeMakeDevs), Track 01: Agents That Act on Connected Data.
 
-- Live demo: `<your Railway URL>`
-- Demo video: `<your video link>`
-- MCP endpoint: `<your Railway URL>/mcp`
+- Live demo: https://postmortem-production-1cd2.up.railway.app
+- Demo video: https://youtu.be/p02M6iydamc
+- Write-up: https://x.com/Rav3nlaud3/status/2111791707888951348
+- MCP endpoint: `https://postmortem-production-1cd2.up.railway.app/mcp`
 
 ## Why a graph
 

@@ -5,10 +5,11 @@ Deadline: Oct 18, 2026, 11:59 PM IST (18:29 UTC). Register and submit at https:/
 - **Project name:** Postmortem
 - **Track:** 01, Agents That Act on Connected Data
 - **Team:** solo, Rav3n
-- **Repository:** `https://github.com/Evoxravenlaude/postmortem` (create it, then push this repo)
-- **Live deployment:** your Railway URL
-- **MCP endpoint:** `<Railway URL>/mcp`
-- **Demo video:** your YouTube link (see docs/VIDEO.md)
+- **Repository:** https://github.com/Evoxravenlaude/postmortem
+- **Live deployment:** https://postmortem-production-1cd2.up.railway.app
+- **MCP endpoint:** `https://postmortem-production-1cd2.up.railway.app/mcp`
+- **Demo video:** https://youtu.be/p02M6iydamc
+- **Blog post:** https://x.com/Rav3nlaud3/status/2111791707888951348
 
 ## One-liner
 
