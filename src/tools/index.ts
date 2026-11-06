@@ -7,6 +7,7 @@ import type { FetchLike } from "../sources/blockscout.js";
 import { PERMIT2, Rpc } from "../sources/rpc.js";
 import type { PathView, ToolResult } from "../types.js";
 import { fmtAmount, fmtUsd, isAddress, isoOf, lc, pad32, short, toUnits } from "../util.js";
+import { NS, ledger, memoryMode, recordOf, remember } from "../memory/memwal.js";
 
 export interface ToolCtx {
   fetchImpl?: FetchLike;
@@ -289,6 +290,13 @@ const who_can_spend = defineTool({
       else if (usdAtRisk != null && usdAtRisk >= 100) (score += 1), reasons.push(`${fmtUsd(usdAtRisk)} reachable now`);
       else if (atRisk > 0 && Number.isFinite(atRisk)) reasons.push(`${fmtAmount(atRisk)} ${tok.symbol} reachable now${usdAtRisk == null ? " (no market price)" : ""}`);
       else reasons.push("nothing reachable right now");
+      // The record check: what memory holds about this spender from earlier postmortems, of any wallet.
+      const rec = await recordOf(sp.addr, ch.key);
+      if (rec.seen) {
+        if (rec.pulls) (score += 2), reasons.push(`memory: pulled funds in ${rec.pulls} earlier case(s) across ${rec.wallets.length} wallet(s)`);
+        else if ((rec.verdicts.high ?? 0) + (rec.verdicts.tagged ?? 0) > 0) (score += 1), reasons.push(`memory: rated high risk in ${rec.seen} earlier postmortem(s)`);
+        else reasons.push(`memory: seen in ${rec.seen} earlier postmortem(s), credibility ${rec.credibility}/100`);
+      }
       const suspectSpender = score >= 2 && (sp.isContract === false || sp.verified === false || tags.length > 0 || (pulled?.usd ?? 0) > 0);
       let level = !active ? "revoked" : score >= 5 ? "high" : score >= 3 ? "medium" : "low";
       // Nothing of value reachable and a reputable spender: keep it on the list, but not as urgent.
@@ -297,7 +305,7 @@ const who_can_spend = defineTool({
         spender: sp.addr, spenderName: sp.name ?? sp.tags?.[0] ?? null, token: ap.token, symbol: tok.symbol, kind: ap.kind,
         grantedAt: isoOf(ap.ts), grantTx: ap.tx, allowance: current, liveChecked: checked, active, unlimited,
         balance: bal, atRisk, atRiskUsd: usdAtRisk, lastUsed: last ? isoOf(last) : null,
-        risk: level, score, reasons,
+        risk: level, score, reasons, memory: { seen: rec.seen, credibility: rec.credibility, wallets: rec.wallets.length, pulls: rec.pulls },
       });
       if (checked)
         await qq.rw(
@@ -554,15 +562,68 @@ const write_postmortem = defineTool({
     const md = lines.join("\n");
     const id = `report:${chainOf(c).key}:${w}:${nowOf(ctx)}`;
     await qq.rw(`MATCH (w:Address {addr:$w}) MERGE (r:Report {id:$id}) SET r.createdAt = $now, r.md = $md MERGE (w)-[:HAS_REPORT]->(r)`, { w, id, now: nowOf(ctx), md });
+
+    // Remember. One incident record, then one counterparty record per spender that pulled or is risky,
+    // so the next postmortem of any wallet can check the record before it scores.
+    const at = isoOf(nowOf(ctx));
+    const written: { blob_id: string; kind: string; address?: string; mode: string }[] = [];
+    const findings = [
+      ...pulls.map((p: any) => `${p.approval?.spenderName ?? short(p.approval?.spender ?? p.to)} pulled ${fmtAmount(p.amount)} ${p.symbol}`),
+      ...risky.slice(0, 5).map((x: any) => `${x.spenderName ?? short(x.spender)} rated ${x.risk} for ${x.symbol}`),
+    ];
+    const inc = await remember(NS.incidents, { kind: "incident", chain: chainOf(c).key, wallet: w, reasons: findings.length ? findings : ["no pulls, nothing exposed"], report_id: id, at }, { idempotencyKey: id });
+    written.push({ blob_id: inc.blob_id, kind: "incident", mode: inc.mode });
+    const seen = new Set<string>();
+    for (const p of pulls as any[]) {
+      const sp = lc(p.approval?.spender ?? p.to);
+      if (seen.has(sp)) continue;
+      seen.add(sp);
+      const e = await remember(NS.counterparties, { kind: "counterparty", chain: chainOf(c).key, wallet: w, address: sp, verdict: "pulled", pulls: 1, pulled_usd: p.usdNow ?? 0, symbol: p.symbol, reasons: [p.approval ? `via ${p.approval.unlimited ? "unlimited " : ""}approval granted ${p.approval.grantedAt.slice(0, 10)}` : "no matching approval"], report_id: id, at }, { idempotencyKey: `${id}:${sp}` });
+      written.push({ blob_id: e.blob_id, kind: "counterparty", address: sp, mode: e.mode });
+    }
+    for (const x of risky as any[]) {
+      const sp = lc(x.spender);
+      if (seen.has(sp)) continue;
+      seen.add(sp);
+      const tagged = x.reasons.some((r: string) => r.startsWith("spender tagged"));
+      const e = await remember(NS.counterparties, { kind: "counterparty", chain: chainOf(c).key, wallet: w, address: sp, verdict: tagged ? "tagged" : x.risk, symbol: x.symbol, reasons: x.reasons.filter((r: string) => !r.startsWith("memory:")), report_id: id, at }, { idempotencyKey: `${id}:${sp}` });
+      written.push({ blob_id: e.blob_id, kind: "counterparty", address: sp, mode: e.mode });
+    }
     return {
-      summary: `Postmortem written and saved to the graph as ${id}.`,
-      data: { id, markdown: md },
+      summary: `Postmortem written and saved to the graph as ${id}. ${written.length} memory record(s) written to Walrus Memory (${memoryMode()}).`,
+      data: { id, markdown: md, memory: written },
       evidence: { cypher: [...ov.evidence.cypher, ...out.evidence.cypher, ...exp.evidence.cypher, ...qq.log], paths: [...out.evidence.paths, ...exp.evidence.paths] },
     };
   },
 });
 
-export const TOOLS: Tool<any>[] = [load_wallet, wallet_overview, explain_outflows, who_can_spend, trace_funds, connection_path, query_graph, plan_revokes, write_postmortem];
+// ---------------------------------------------------------------- check_record
+const check_record = defineTool({
+  name: "check_record",
+  description:
+    "The record check, before you deal with an address: everything Postmortem remembers about it from earlier postmortems of any wallet (pulls, risk verdicts, how many wallets it touched), folded into a credibility score. Reads Walrus Memory. Works for any address, loaded or not.",
+  shape: { address: z.string().describe("0x address of a contract or account you are about to approve, sign for, or send to"), chain: z.string().optional().describe("Limit to one chain; default all") },
+  async run({ address: a, chain: c }) {
+    const addr = need(a, "address");
+    const rec = await recordOf(addr, c ? chainOf(c).key : undefined);
+    return { summary: rec.summary, data: { ...rec, last: rec.last ? { blob_id: rec.last.blob_id, at: rec.last.at, verdict: rec.last.verdict, wallet: rec.last.wallet } : null, mode: memoryMode() }, evidence: { cypher: [], paths: [] } };
+  },
+});
+
+// ---------------------------------------------------------------- memory_ledger
+const memory_ledger = defineTool({
+  name: "memory_ledger",
+  description: "What Postmortem has remembered: every incident and counterparty record written to Walrus Memory, newest first, with its blob id and the Sui checkpoint current when it was written.",
+  shape: { limit: z.number().int().min(1).max(200).optional().describe("Default 50") },
+  async run({ limit }) {
+    const all = ledger();
+    const items = all.slice(0, limit ?? 50).map((e) => ({ blob_id: e.blob_id, namespace: e.namespace, kind: e.kind, chain: e.chain, wallet: e.wallet, address: e.address, verdict: e.verdict, at: e.at, sui_checkpoint: e.sui_checkpoint, mode: e.mode, text: e.text.split("\n")[0] }));
+    const cps = all.filter((e) => e.kind === "counterparty").length;
+    return { summary: `${all.length} memory record(s): ${all.length - cps} incident(s), ${cps} counterparty record(s), mode ${memoryMode()}.`, data: { total: all.length, items }, evidence: { cypher: [], paths: [] } };
+  },
+});
+
+export const TOOLS: Tool<any>[] = [load_wallet, wallet_overview, explain_outflows, who_can_spend, trace_funds, connection_path, query_graph, plan_revokes, write_postmortem, check_record, memory_ledger];
 
 export function toolByName(name: string): Tool<any> | undefined {
   return TOOLS.find((t) => t.name === name);

@@ -70,6 +70,16 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .report code { font: 12px var(--mono); }
 .report:empty::after { content: "The written postmortem lands here when the run finishes."; display: block; padding: 10px 0; color: var(--muted); font-size: 14px; }
 .acts { padding: 0 14px 14px; display: grid; gap: 8px; }
+.mem { display: grid; gap: 10px; padding: 12px 14px; }
+.record { border: 1px solid var(--line); border-left: 3px solid var(--tag); border-radius: 8px; padding: 10px 12px; font-size: 13px; display: grid; gap: 6px; }
+.record.bad { border-left-color: var(--pull); } .record.good { border-left-color: var(--act); }
+.cred { font: 600 22px var(--cond); } .record.bad .cred { color: var(--pull); } .record.good .cred { color: var(--act); }
+.memlist { display: grid; gap: 6px; max-height: 320px; overflow: auto; }
+.memrow { display: grid; grid-template-columns: 78px 1fr auto; gap: 10px; align-items: baseline; font-size: 12.5px; border-bottom: 1px dashed var(--line); padding: 5px 0; }
+.memrow .k { font: 11px var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.memrow .k.pulled, .memrow .k.tagged { color: var(--pull); } .memrow .k.incident { color: var(--tag); }
+.memrow .b { font: 11px var(--mono); color: var(--muted); white-space: nowrap; }
+.memrow .b a { color: inherit; }
 .act { border: 1px solid var(--line); border-left: 3px solid var(--act); border-radius: 8px; padding: 8px 10px; font-size: 13px; display: grid; gap: 4px; }
 .act code { font: 11.5px var(--mono); word-break: break-all; color: var(--muted); }
 .ask { padding: 12px 14px; display: grid; gap: 8px; }
@@ -142,6 +152,18 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     </div>
   </section>
 
+  <section class="card" aria-label="Memory" id="memcard">
+    <h2>Memory <span class="hint" id="memnote">Walrus · every postmortem is remembered; every spender is checked against the record</span></h2>
+    <div class="mem">
+      <form class="askrow" id="recform">
+        <input type="text" id="recaddr" placeholder="Check an address's record: 0x…  (any spender, drainer or contract)" aria-label="Address to check">
+        <button type="submit">Check record</button>
+      </form>
+      <div class="record" id="record" hidden></div>
+      <div class="memlist" id="memlist"><p class="hint">No memories yet. Run a postmortem and its findings are written to Walrus.</p></div>
+    </div>
+  </section>
+
   <section class="card" aria-label="Report">
     <h2>Postmortem <button type="button" class="ghost" id="copymd" style="padding:4px 10px;font-size:12px">Copy markdown</button></h2>
     <div class="report" id="report"></div>
@@ -164,7 +186,9 @@ fetch("/api/health").then((r) => r.json()).then((h) => {
     pill(h.falkordb ? "ok" : "bad", "FalkorDB " + (h.falkordb ? "connected" : "down")),
     pill(h.llm ? "ok" : "bad", h.llm ? "agent: " + h.llm.model : "no LLM key: autopilot only"),
     pill("", h.tools.length + " graph tools"),
+    pill(h.memory && h.memory.mode === "live" ? "ok" : "", "memory: " + (h.memory && h.memory.mode === "live" ? "Walrus mainnet" : "mock (no MEMWAL key)") + (h.memory && h.memory.tatum ? " · Sui stamp via Tatum" : "")),
   );
+  loadMemory();
   $("#llmnote").textContent = h.llm ? "the agent picks tools itself" : "needs an LLM key on the server";
   $("#askbtn").disabled = !h.llm;
 }).catch(() => $("#pills").replaceChildren(pill("bad", "server unreachable")));
@@ -214,8 +238,9 @@ $("#caseform").onsubmit = async (e) => {
       onAgentEvent(ev, p);
       if (ev === "answer") { state.md = p.answer; $("#report").innerHTML = DOMPurify.sanitize(marked.parse(p.answer)); }
     });
-    $("#note").textContent = "Done. Click any step to see its proof.";
+    $("#note").textContent = "Done. Click any step to see its proof. The findings are now in memory.";
   } catch (err) { $("#note").textContent = err.message; }
+  loadMemory();
   $("#run").disabled = false;
 };
 
@@ -310,6 +335,46 @@ function drawEvidence() {
   el.innerHTML = "";
   network = new vis.Network(el, { nodes, edges }, { physics: { solver: "forceAtlas2Based", stabilization: { iterations: 200 } }, interaction: { hover: true }, layout: { randomSeed: 7 } });
 }
+
+
+async function loadMemory() {
+  try {
+    const m = await (await fetch("/api/memory?limit=40")).json();
+    const box = $("#memlist"); box.replaceChildren();
+    $("#memnote").textContent = (m.mode === "live" ? "Walrus mainnet" : "mock mode") + " · " + m.total + " memor" + (m.total === 1 ? "y" : "ies") + " written";
+    if (!m.entries.length) { box.innerHTML = '<p class="hint">No memories yet. Run a postmortem and its findings are written to Walrus.</p>'; return; }
+    for (const e of m.entries) {
+      const row = document.createElement("div"); row.className = "memrow";
+      const k = document.createElement("span"); k.className = "k " + (e.kind === "incident" ? "incident" : e.verdict || ""); k.textContent = e.kind === "incident" ? "incident" : e.verdict || "record";
+      const t = document.createElement("span"); t.textContent = e.text.split("\n")[0];
+      const b = document.createElement("span"); b.className = "b";
+      const bid = short(e.blob_id);
+      if (e.mode === "live") { const a = document.createElement("a"); a.href = "https://walruscan.com/mainnet/blob/" + e.blob_id; a.target = "_blank"; a.rel = "noopener"; a.textContent = "blob " + bid; b.append(a); } else b.textContent = "mock " + bid;
+      if (e.sui_checkpoint) b.append(" · sui #" + e.sui_checkpoint);
+      row.append(k, t, b); box.append(row);
+    }
+  } catch { /* server down */ }
+}
+$("#recform").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const address = $("#recaddr").value.trim();
+  const out = $("#record"); out.hidden = false; out.className = "record"; out.textContent = "Checking the record…";
+  try {
+    const res = await fetch("/api/record/" + encodeURIComponent(address));
+    const r = await res.json();
+    if (r.error) { out.textContent = r.error; out.classList.add("bad"); return; }
+    if (r.credibility < 50) out.classList.add("bad"); else if (r.seen) out.classList.add("good");
+    out.replaceChildren();
+    const c = document.createElement("div"); c.className = "cred"; c.textContent = r.credibility + "/100 credibility";
+    const s = document.createElement("div"); s.textContent = r.summary;
+    out.append(c, s);
+    if (r.seen) {
+      const v = document.createElement("div"); v.className = "hint";
+      v.textContent = "verdicts: " + Object.entries(r.verdicts).map(([k, n]) => k + " ×" + n).join(", ") + " · wallets: " + r.wallets.map(short).join(", ") + (r.pulled_usd ? " · pulled ≈ $" + Math.round(r.pulled_usd).toLocaleString("en-US") : "");
+      out.append(v);
+    }
+  } catch { out.textContent = "Could not reach the server."; out.classList.add("bad"); }
+};
 
 function renderActs(actions) {
   const box = $("#acts"); box.replaceChildren();

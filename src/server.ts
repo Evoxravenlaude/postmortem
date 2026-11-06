@@ -10,6 +10,8 @@ import { chatFn, llmFromEnv, type Msg } from "./agent/llm.js";
 import { chains, chainOf } from "./chains.js";
 import { closeDb, db, graphFor, Q } from "./graph/db.js";
 import { createMcpServer } from "./mcp.js";
+import { health as memoryHealth, ledger as memoryLedger, recordOf } from "./memory/memwal.js";
+import { tatumEnabled } from "./sources/tatum.js";
 import { TOOLS, runTool } from "./tools/index.js";
 import { isAddress, lc } from "./util.js";
 
@@ -70,7 +72,29 @@ app.get("/api/health", async (c) => {
     /* down */
   }
   const llm = llmFromEnv();
-  return c.json({ ok: falkordb, falkordb, llm: llm ? { model: llm.model } : null, chains: chains().map((x) => ({ key: x.key, name: x.name })), tools: TOOLS.map((t) => t.name) });
+  const memory = await memoryHealth();
+  return c.json({
+    ok: falkordb,
+    falkordb,
+    llm: llm ? { model: llm.model } : null,
+    memory: { ...memory, tatum: tatumEnabled() },
+    chains: chains().map((x) => ({ key: x.key, name: x.name })),
+    tools: TOOLS.map((t) => t.name),
+  });
+});
+
+// Walrus Memory: what Postmortem has remembered, and the record check for one address.
+app.get("/api/memory", (c) => {
+  const limit = Math.min(200, Number(c.req.query("limit") ?? 50));
+  const all = memoryLedger();
+  return c.json({ mode: all[0]?.mode ?? (process.env.MEMWAL_PRIVATE_KEY ? "live" : "mock"), total: all.length, entries: all.slice(0, limit) });
+});
+app.get("/api/record/:address", async (c) => {
+  const address = c.req.param("address");
+  if (!isAddress(address)) return c.json({ error: "Enter a 0x address (42 characters)." }, 400);
+  const chain = c.req.query("chain") || undefined;
+  if (chain) chainOf(chain);
+  return c.json(await recordOf(lc(address), chain));
 });
 
 function validate(body: any) {

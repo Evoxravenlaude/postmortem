@@ -1,5 +1,6 @@
 import { pad32 } from "../util.js";
 import type { FetchLike } from "./blockscout.js";
+import { tatumHeaders } from "./tatum.js";
 
 /** Minimal JSON-RPC reads for live allowance and balance checks. */
 export class Rpc {
@@ -10,7 +11,7 @@ export class Rpc {
     try {
       const res = await this.fetchImpl(this.url, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...tatumHeaders() },
         body: JSON.stringify({ jsonrpc: "2.0", id: this.id++, method: "eth_call", params: [{ to, data }, "latest"] }),
       });
       if (!res.ok) return null;

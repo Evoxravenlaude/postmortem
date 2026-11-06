@@ -8,6 +8,8 @@ export interface Chain {
   explorer: string; // human explorer base
 }
 
+import { tatumRpc } from "./sources/tatum.js";
+
 const env = (k: string) => process.env[k];
 
 /** Blockscout instances and public RPCs. Each can be overridden with BLOCKSCOUT_<KEY> / RPC_<KEY>. */
@@ -24,7 +26,7 @@ export function chains(): Chain[] {
   return BASE.map((c) => ({
     ...c,
     blockscout: env(`BLOCKSCOUT_${c.key.toUpperCase()}`) ?? c.blockscout,
-    rpc: env(`RPC_${c.key.toUpperCase()}`) ?? c.rpc,
+    rpc: env(`RPC_${c.key.toUpperCase()}`) ?? tatumRpc(c.key) ?? c.rpc,
   }));
 }
 
