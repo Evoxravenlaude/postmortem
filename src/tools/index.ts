@@ -200,6 +200,20 @@ const explain_outflows = defineTool({
       );
       if (ps[0]) views.push(mergeViews(`${fmtAmount(p.amount)} ${p.symbol} pulled on ${p.when.slice(0, 10)}`, [pathView("", ps[0].p1), pathView("", ps[0].p2)]));
     }
+    // Follow the money into memory: where did pulled funds go, and who signed? A fresh spender
+    // contract has no record, but the kit's payout wallet usually does.
+    const allPulls = events.filter((e) => e.cause.startsWith("pulled"));
+    const known: { address: string; role: "payout" | "operator"; seen: number; wallets: number; credibility: number; summary: string }[] = [];
+    const checked = new Set<string>();
+    for (const p of allPulls) {
+      for (const [addr, role] of [[p.to, "payout"], [p.signer, "operator"]] as const) {
+        if (!addr || checked.has(addr) || addr === w || checked.size >= 12) continue;
+        checked.add(addr);
+        const r = await recordOf(addr, chainOf(c).key);
+        const others = r.wallets.filter((x) => x !== w);
+        if (others.length) known.push({ address: addr, role, seen: r.seen, wallets: others.length, credibility: r.credibility, summary: r.summary });
+      }
+    }
     const biggest = [...events].sort((x, y) => (y.usdNow ?? 0) - (x.usdNow ?? 0)).slice(0, 15);
     const parts = Object.entries(totals)
       .sort((x, y) => y[1].usdNow - x[1].usdNow)
@@ -209,8 +223,9 @@ const explain_outflows = defineTool({
         events.length === 0
           ? `No outflows from ${short(w)} in that window.`
           : `${events.length} outflows from ${short(w)}. ${parts.join("; ")}. Gas: ${fmtAmount(gasNative)} ${chainOf(c).native} across ${gas?.n ?? 0} signed transactions.` +
-            (pulls.length ? ` ${pulls.length} pull(s) trace back to an approval; see the paths.` : ""),
-      data: { window: { from: isoOf(from), to: isoOf(to) }, totals, gas: { native: gasNative, txs: gas?.n ?? 0 }, biggest, pulls: events.filter((e) => e.cause.startsWith("pulled")), spamLike: events.filter((e) => e.cause.startsWith("unpriced")).length },
+            (pulls.length ? ` ${pulls.length} pull(s) trace back to an approval; see the paths.` : "") +
+            known.map((k) => ` Memory: the ${k.role === "payout" ? "pulled funds went to" : "pulls were signed by"} ${short(k.address)}, which has a record from ${k.wallets} other drained wallet(s) (credibility ${k.credibility}/100). Same drainer.`).join(""),
+      data: { window: { from: isoOf(from), to: isoOf(to) }, totals, gas: { native: gasNative, txs: gas?.n ?? 0 }, biggest, pulls: allPulls, spamLike: events.filter((e) => e.cause.startsWith("unpriced")).length, memory: known },
       evidence: { cypher: qq.log, paths: views },
     };
   },
@@ -578,8 +593,18 @@ const write_postmortem = defineTool({
       const sp = lc(p.approval?.spender ?? p.to);
       if (seen.has(sp)) continue;
       seen.add(sp);
-      const e = await remember(NS.counterparties, { kind: "counterparty", chain: chainOf(c).key, wallet: w, address: sp, verdict: "pulled", pulls: 1, pulled_usd: p.usdNow ?? 0, symbol: p.symbol, reasons: [p.approval ? `via ${p.approval.unlimited ? "unlimited " : ""}approval granted ${p.approval.grantedAt.slice(0, 10)}` : "no matching approval"], report_id: id, at }, { idempotencyKey: `${id}:${sp}` });
+      const e = await remember(NS.counterparties, { kind: "counterparty", role: "spender", chain: chainOf(c).key, wallet: w, address: sp, verdict: "pulled", pulls: 1, pulled_usd: p.usdNow ?? 0, symbol: p.symbol, reasons: [p.approval ? `via ${p.approval.unlimited ? "unlimited " : ""}approval granted ${p.approval.grantedAt.slice(0, 10)}` : "no matching approval"], report_id: id, at }, { idempotencyKey: `${id}:${sp}` });
       written.push({ blob_id: e.blob_id, kind: "counterparty", address: sp, mode: e.mode });
+    }
+    // The payout and operator wallets behind each pull: the part of a drainer that does not rotate.
+    for (const p of pulls as any[]) {
+      for (const [addr, role] of [[p.to, "payout"], [p.signer, "operator"]] as const) {
+        const a2 = addr ? lc(addr) : "";
+        if (!a2 || a2 === w || seen.has(a2)) continue;
+        seen.add(a2);
+        const e = await remember(NS.counterparties, { kind: "counterparty", role, chain: chainOf(c).key, wallet: w, address: a2, verdict: "pulled", pulled_usd: p.usdNow ?? 0, symbol: p.symbol, reasons: [`${role === "payout" ? "received" : "signed"} a pull of ${fmtAmount(p.amount)} ${p.symbol} on ${String(p.when).slice(0, 10)}`], report_id: id, at }, { idempotencyKey: `${id}:${a2}` });
+        written.push({ blob_id: e.blob_id, kind: "counterparty", address: a2, mode: e.mode });
+      }
     }
     for (const x of risky as any[]) {
       const sp = lc(x.spender);
