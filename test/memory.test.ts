@@ -95,4 +95,17 @@ describe("Walrus Memory layer (mock)", () => {
     expect(r.credibility).toBeLessThan(20);
     expect(mem.render({ kind: "counterparty", role: "payout", chain: "ethereum", wallet: "0xv1", address: FEE, verdict: "pulled", symbol: "USDT", at }).split("\n")[0]).toMatch(/received USDT pulled from wallet 0xv1/);
   });
+
+  it("counts each drained wallet once and ignores zero-value poisoning records", async () => {
+    const X = "0x7777777777777777777777777777777777777777";
+    await mem.remember(mem.NS.counterparties, { kind: "counterparty", role: "payout", chain: "ethereum", wallet: "0xw1", address: X, verdict: "pulled", pulled_usd: 500, reasons: ["received a pull of 500 USDC on 2026-07-01"], at: "2026-11-07T00:00:00Z" });
+    await mem.remember(mem.NS.counterparties, { kind: "counterparty", role: "payout", chain: "ethereum", wallet: "0xw1", address: X, verdict: "pulled", pulled_usd: 500, reasons: ["received a pull of 500 USDC on 2026-07-01"], at: "2026-11-07T01:00:00Z" });
+    const Z = "0x8888888888888888888888888888888888888888";
+    await mem.remember(mem.NS.counterparties, { kind: "counterparty", role: "operator", chain: "ethereum", wallet: "0xw2", address: Z, verdict: "pulled", pulled_usd: 0, reasons: ["signed a pull of 0.000 USDC on 2026-07-07"], at: "2026-11-07T00:00:00Z" });
+    const r = await mem.recordOf(X);
+    expect(r.wallets).toEqual(["0xw1"]);
+    expect(r.roles.payout).toBe(1);
+    expect(r.credibility).toBe(60);
+    expect((await mem.recordOf(Z)).seen).toBe(0);
+  });
 });

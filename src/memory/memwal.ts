@@ -144,7 +144,17 @@ function roleText(roles: Record<string, number>, pulls: number) {
 }
 export async function recordOf(address: string, chain?: string): Promise<Record_> {
   const a = address.toLowerCase();
-  const hits = (await recall(NS.counterparties, `counterparty ${a}`, 50)).filter((h) => h.address === a && (!chain || h.chain === chain));
+  const raw = (await recall(NS.counterparties, `counterparty ${a}`, 50)).filter((h) => h.address === a && (!chain || h.chain === chain));
+  // One judgment per (wallet, role): re-running a wallet writes a fresh record, and that must not
+  // count as a second victim. Keep the latest; ignore zero-value "pulls" (address poisoning).
+  const latest = new Map<string, MemoryEntry>();
+  for (const h of raw) {
+    if (h.verdict === "pulled" && h.role !== "spender" && (h.pulled_usd ?? 0) === 0 && /pull of 0(\.0+)? /.test(h.reasons?.join(" ") ?? "")) continue;
+    const k = `${h.wallet}|${h.role ?? "spender"}`;
+    const cur = latest.get(k);
+    if (!cur || h.at > cur.at) latest.set(k, h);
+  }
+  const hits = [...latest.values()];
   const wallets = [...new Set(hits.map((h) => h.wallet).filter(Boolean))] as string[];
   const verdicts: Record<string, number> = {};
   const roles: Record<string, number> = {};
@@ -163,7 +173,7 @@ export async function recordOf(address: string, chain?: string): Promise<Record_
   cred = Math.max(0, Math.min(100, cred));
   const last = hits.sort((x, y) => (x.at < y.at ? 1 : -1))[0];
   const summary = hits.length
-    ? `${a.slice(0, 10)}… has a record: seen in ${hits.length} prior postmortem(s) across ${wallets.length} wallet(s); ${roleText(roles, pulls)}; last verdict ${last?.verdict} on ${last?.at.slice(0, 10)}. Credibility ${cred}/100.`
+    ? `${a.slice(0, 10)}… has a record across ${wallets.length} drained wallet(s); ${roleText(roles, pulls)}; last verdict ${last?.verdict} on ${last?.at.slice(0, 10)}. Credibility ${cred}/100.`
     : `${a.slice(0, 10)}… has no record in memory yet. Credibility ${cred}/100 by default.`;
   return { address: a, seen: hits.length, wallets, pulls, pulled_usd: pulledUsd, verdicts, roles, last, credibility: cred, summary };
 }
