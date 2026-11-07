@@ -112,7 +112,7 @@ const wallet_overview = defineTool({
 });
 
 // ---------------------------------------------------------------- explain_outflows
-type Cause = "swap" | "sent" | "contract call" | "pulled by approval" | "pulled (signer not looked up)" | "unpriced token moved by others (often spam)" | "older than loaded history";
+type Cause = "swap" | "sent" | "contract call" | "zero-value transfer (address poisoning)" | "pulled by approval" | "pulled (signer not looked up)" | "unpriced token moved by others (often spam)" | "older than loaded history";
 
 const explain_outflows = defineTool({
   name: "explain_outflows",
@@ -153,6 +153,8 @@ const explain_outflows = defineTool({
       const s = r.s.properties;
       let cause: Cause;
       if (s.by === w || s.kind === "native") cause = r.back > 0 ? "swap" : r.d.properties.isContract ? "contract call" : "sent";
+      // transferFrom(victim, lookalike, 0) needs no approval: poisoners use it to plant fake history.
+      else if (Number(s.amount) === 0) cause = "zero-value transfer (address poisoning)";
       else if (s.usdNow == null && (s.by || s.ts >= cov)) cause = "unpriced token moved by others (often spam)";
       else if (s.by) cause = "pulled by approval";
       else if (s.ts >= cov) cause = "pulled (signer not looked up)";
@@ -605,7 +607,7 @@ const write_postmortem = defineTool({
       const sp = lc(p.approval?.spender ?? p.to);
       if (seen.has(sp)) continue;
       seen.add(sp);
-      jobs.push({ key: `${id}:${sp}`, rec: { kind: "counterparty", role: "spender", chain: chainOf(c).key, wallet: w, address: sp, verdict: "pulled", pulls: 1, pulled_usd: p.usdNow ?? 0, symbol: p.symbol, reasons: [p.approval ? `via ${p.approval.unlimited ? "unlimited " : ""}approval granted ${p.approval.grantedAt.slice(0, 10)}` : "no matching approval"], report_id: id, at } });
+      jobs.push({ key: `${chainOf(c).key}:${w}:${sp}:spender:pulled`, rec: { kind: "counterparty", role: "spender", chain: chainOf(c).key, wallet: w, address: sp, verdict: "pulled", pulls: 1, pulled_usd: p.usdNow ?? 0, symbol: p.symbol, reasons: [p.approval ? `via ${p.approval.unlimited ? "unlimited " : ""}approval granted ${p.approval.grantedAt.slice(0, 10)}` : "no matching approval"], report_id: id, at } });
     }
     // The payout and operator wallets behind each pull: the part of a drainer that does not rotate.
     for (const p of pulls as any[]) {
@@ -613,7 +615,7 @@ const write_postmortem = defineTool({
         const a2 = addr ? lc(addr) : "";
         if (!a2 || a2 === w || seen.has(a2)) continue;
         seen.add(a2);
-        jobs.push({ key: `${id}:${a2}`, rec: { kind: "counterparty", role, chain: chainOf(c).key, wallet: w, address: a2, verdict: "pulled", pulled_usd: p.usdNow ?? 0, symbol: p.symbol, reasons: [`${role === "payout" ? "received" : "signed"} a pull of ${fmtAmount(p.amount)} ${p.symbol} on ${String(p.when).slice(0, 10)}`], report_id: id, at } });
+        jobs.push({ key: `${chainOf(c).key}:${w}:${a2}:${role}`, rec: { kind: "counterparty", role, chain: chainOf(c).key, wallet: w, address: a2, verdict: "pulled", pulled_usd: p.usdNow ?? 0, symbol: p.symbol, reasons: [`${role === "payout" ? "received" : "signed"} a pull of ${fmtAmount(p.amount)} ${p.symbol} on ${String(p.when).slice(0, 10)}`], report_id: id, at } });
       }
     }
     for (const x of risky as any[]) {
@@ -621,25 +623,32 @@ const write_postmortem = defineTool({
       if (seen.has(sp)) continue;
       seen.add(sp);
       const tagged = x.reasons.some((r: string) => r.startsWith("spender tagged"));
-      jobs.push({ key: `${id}:${sp}`, rec: { kind: "counterparty", role: "spender", chain: chainOf(c).key, wallet: w, address: sp, verdict: tagged ? "tagged" : x.risk, symbol: x.symbol, reasons: x.reasons.filter((r: string) => !r.startsWith("memory:")), report_id: id, at } });
+      jobs.push({ key: `${chainOf(c).key}:${w}:${sp}:spender:${tagged ? "tagged" : x.risk}`, rec: { kind: "counterparty", role: "spender", chain: chainOf(c).key, wallet: w, address: sp, verdict: tagged ? "tagged" : x.risk, symbol: x.symbol, reasons: x.reasons.filter((r: string) => !r.startsWith("memory:")), report_id: id, at } });
     }
+    // Send every write at once and wait up to MEMORY_WAIT_MS (default 30 s). Whatever has not landed
+    // by then keeps going in the background; the Memory panel shows it when it does.
     const failed: string[] = [];
-    for (let i = 0; i < jobs.length; i += 6) {
-      const batch = jobs.slice(i, i + 6);
-      const res = await Promise.allSettled(batch.map((j) => remember(NS.counterparties, j.rec, { idempotencyKey: j.key })));
-      res.forEach((r, k) => {
-        if (r.status === "fulfilled") written.push({ blob_id: r.value.blob_id, kind: "counterparty", address: batch[k].rec.address, mode: r.value.mode });
-        else failed.push(batch[k].rec.address ?? "?");
-      });
-    }
-    try {
-      const inc = await incP;
-      written.unshift({ blob_id: inc.blob_id, kind: "incident", mode: inc.mode });
-    } catch {
-      failed.push("incident");
+    let pending = 0;
+    const waitMs = Number(process.env.MEMORY_WAIT_MS ?? 30_000);
+    const all = jobs.slice(0, 24).map((j) =>
+      remember(NS.counterparties, j.rec, { idempotencyKey: j.key }).then(
+        (e) => written.push({ blob_id: e.blob_id, kind: "counterparty", address: j.rec.address, mode: e.mode }),
+        () => failed.push(j.rec.address ?? "?"),
+      ),
+    );
+    const settled = Promise.allSettled([...all, incP.catch(() => undefined)]);
+    const timedOut = await Promise.race([settled.then(() => false), new Promise<boolean>((r) => setTimeout(() => r(true), waitMs))]);
+    if (timedOut) pending = jobs.slice(0, 24).length + 1 - written.length - failed.length;
+    if (!timedOut) {
+      try {
+        const inc = await incP;
+        written.unshift({ blob_id: inc.blob_id, kind: "incident", mode: inc.mode });
+      } catch {
+        failed.push("incident");
+      }
     }
     return {
-      summary: `Postmortem written and saved to the graph as ${id}. ${written.length} memory record(s) written to Walrus Memory (${memoryMode()}).` + (failed.length ? ` ${failed.length} write(s) failed and can be retried by running again.` : ""),
+      summary: `Postmortem written and saved to the graph as ${id}. ${written.length} memory record(s) written to Walrus Memory (${memoryMode()}).` + (pending > 0 ? ` ${pending} more still landing on Walrus; they appear in the Memory panel shortly.` : "") + (failed.length ? ` ${failed.length} write(s) failed and can be retried by running again.` : ""),
       data: { id, markdown: md, memory: written },
       evidence: { cypher: [...ov.evidence.cypher, ...out.evidence.cypher, ...exp.evidence.cypher, ...qq.log], paths: [...out.evidence.paths, ...exp.evidence.paths] },
     };
