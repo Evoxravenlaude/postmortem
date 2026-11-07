@@ -79,4 +79,20 @@ describe("Walrus Memory layer (mock)", () => {
     expect(await blockStamp("solana", fake)).toBeNull();
     delete process.env.TATUM_API_KEY;
   });
+
+  it("follows the payout wallet when the drainer rotates spender contracts", async () => {
+    const FEE = "0x4444444444444444444444444444444444444444";
+    const at = "2026-11-07T00:00:00Z";
+    // Two victims, two different fresh spender contracts, one fee wallet.
+    await mem.remember(mem.NS.counterparties, { kind: "counterparty", role: "spender", chain: "ethereum", wallet: "0xv1", address: "0x5555555555555555555555555555555555555555", verdict: "pulled", pulls: 1, at });
+    await mem.remember(mem.NS.counterparties, { kind: "counterparty", role: "payout", chain: "ethereum", wallet: "0xv1", address: FEE, verdict: "pulled", symbol: "USDT", at });
+    await mem.remember(mem.NS.counterparties, { kind: "counterparty", role: "spender", chain: "ethereum", wallet: "0xv2", address: "0x6666666666666666666666666666666666666666", verdict: "pulled", pulls: 1, at });
+    await mem.remember(mem.NS.counterparties, { kind: "counterparty", role: "payout", chain: "ethereum", wallet: "0xv2", address: FEE, verdict: "pulled", symbol: "WBTC", at });
+    const r = await mem.recordOf(FEE);
+    expect(r.wallets).toEqual(["0xv1", "0xv2"]);
+    expect(r.roles.payout).toBe(2);
+    expect(r.summary).toMatch(/received pulled funds from 2 drained wallet/);
+    expect(r.credibility).toBeLessThan(20);
+    expect(mem.render({ kind: "counterparty", role: "payout", chain: "ethereum", wallet: "0xv1", address: FEE, verdict: "pulled", symbol: "USDT", at }).split("\n")[0]).toMatch(/received USDT pulled from wallet 0xv1/);
+  });
 });

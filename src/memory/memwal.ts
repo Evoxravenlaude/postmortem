@@ -19,6 +19,9 @@ export interface MemoryRecord {
   wallet?: string;
   address?: string; // counterparty
   verdict?: "pulled" | "tagged" | "high" | "medium" | "low" | "revoked" | "clean";
+  // What the address did. Drainer kits rotate spender contracts but keep payout and operator wallets,
+  // so those are remembered too: the record follows the money, not just the contract.
+  role?: "spender" | "payout" | "operator";
   pulled_usd?: number;
   pulls?: number;
   symbol?: string;
@@ -83,7 +86,7 @@ export function render(rec: MemoryRecord): string {
     rec.kind === "incident"
       ? `Postmortem for wallet ${rec.wallet} on ${rec.chain} (${rec.at.slice(0, 10)}): ${rec.reasons?.join("; ") ?? "no findings"}.`
       : `Counterparty ${rec.address} on ${rec.chain} (${rec.at.slice(0, 10)}): verdict ${rec.verdict}` +
-        (rec.pulls ? `, pulled ${rec.symbol ?? "tokens"} from wallet ${rec.wallet} in ${rec.pulls} tx` : "") +
+        (rec.role === "payout" ? `, received ${rec.symbol ?? "tokens"} pulled from wallet ${rec.wallet}` : rec.role === "operator" ? `, signed pulls of ${rec.symbol ?? "tokens"} from wallet ${rec.wallet}` : rec.pulls ? `, pulled ${rec.symbol ?? "tokens"} from wallet ${rec.wallet} in ${rec.pulls} tx` : "") +
         (rec.reasons?.length ? `; ${rec.reasons.join("; ")}` : "") +
         ".";
   return `${head}\n${JSON.stringify(rec)}`;
@@ -127,19 +130,29 @@ export interface Record_ {
   pulls: number;
   pulled_usd: number;
   verdicts: Record<string, number>;
+  roles: Record<string, number>;
   last?: MemoryEntry;
   credibility: number; // 0 (drainer) .. 100 (clean record)
   summary: string;
+}
+function roleText(roles: Record<string, number>, pulls: number) {
+  const bits: string[] = [];
+  if (roles.payout) bits.push(`received pulled funds from ${roles.payout} drained wallet(s)`);
+  if (roles.operator) bits.push(`signed pulls from ${roles.operator} drained wallet(s)`);
+  if (pulls) bits.push(`pulled funds ${pulls} time(s) as spender`);
+  return bits.length ? bits.join("; ") : "never pulled funds";
 }
 export async function recordOf(address: string, chain?: string): Promise<Record_> {
   const a = address.toLowerCase();
   const hits = (await recall(NS.counterparties, `counterparty ${a}`, 50)).filter((h) => h.address === a && (!chain || h.chain === chain));
   const wallets = [...new Set(hits.map((h) => h.wallet).filter(Boolean))] as string[];
   const verdicts: Record<string, number> = {};
+  const roles: Record<string, number> = {};
   let pulls = 0,
     pulledUsd = 0;
   for (const h of hits) {
     verdicts[h.verdict ?? "unknown"] = (verdicts[h.verdict ?? "unknown"] ?? 0) + 1;
+    roles[h.role ?? "spender"] = (roles[h.role ?? "spender"] ?? 0) + 1;
     pulls += h.pulls ?? 0;
     pulledUsd += h.pulled_usd ?? 0;
   }
@@ -150,9 +163,9 @@ export async function recordOf(address: string, chain?: string): Promise<Record_
   cred = Math.max(0, Math.min(100, cred));
   const last = hits.sort((x, y) => (x.at < y.at ? 1 : -1))[0];
   const summary = hits.length
-    ? `${a.slice(0, 10)}… has a record: seen in ${hits.length} prior postmortem(s) across ${wallets.length} wallet(s); ${pulls ? `pulled funds ${pulls} time(s)` : "never pulled funds"}; last verdict ${last?.verdict} on ${last?.at.slice(0, 10)}. Credibility ${cred}/100.`
+    ? `${a.slice(0, 10)}… has a record: seen in ${hits.length} prior postmortem(s) across ${wallets.length} wallet(s); ${roleText(roles, pulls)}; last verdict ${last?.verdict} on ${last?.at.slice(0, 10)}. Credibility ${cred}/100.`
     : `${a.slice(0, 10)}… has no record in memory yet. Credibility ${cred}/100 by default.`;
-  return { address: a, seen: hits.length, wallets, pulls, pulled_usd: pulledUsd, verdicts, last, credibility: cred, summary };
+  return { address: a, seen: hits.length, wallets, pulls, pulled_usd: pulledUsd, verdicts, roles, last, credibility: cred, summary };
 }
 
 export async function health(): Promise<{ mode: "live" | "mock"; ok: boolean; writes: number }> {
