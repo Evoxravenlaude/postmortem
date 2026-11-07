@@ -1,13 +1,13 @@
 # Postmortem Remembers
 
-**Why did my money move, and has this spender done it before?** Postmortem loads a wallet's on-chain history into a FalkorDB graph and lets an agent walk it. It tells you which outflows you signed, which were swaps, and which were **pulled by someone else through an approval you gave months ago**. It shows the exact graph path behind each answer, follows the money to where it came to rest, scores what is still exposed, and then acts: it drafts the revoke transactions and writes the postmortem back into the graph.
+**Why did my money move, and has this drainer done it before?** Postmortem loads a wallet's on-chain history into a FalkorDB graph and lets an agent walk it. It tells you which outflows you signed, which were swaps, and which were **pulled by someone else through an approval you gave months ago**. It shows the exact graph path behind each answer, follows the money to where it came to rest, scores what is still exposed, and then acts: it drafts the revoke transactions and writes the postmortem back into the graph.
 
-Postmortem started at Graph Hacks (FalkorDB x WeMakeDevs). **Postmortem Remembers**, built for Tatum's Total Recall (Walrus Memory), gives it long-term memory: every postmortem is written to Walrus, and before the agent judges any spender it checks the spender's record. A drainer that emptied one wallet last week is a drainer on the next wallet it appears in. Chain reads go through Tatum's gateways with one key, and each memory is stamped with the block of the chain it judged, read through Tatum at write time.
+Postmortem started at Graph Hacks (FalkorDB x WeMakeDevs). **Postmortem Remembers**, built for Tatum's Total Recall (Walrus Memory), gives it long-term memory: every postmortem is written to Walrus, and before the agent judges a pull it checks the record of everyone involved: the spender, the wallet the money landed in, and the operator that signed. Drainer kits deploy a fresh spender contract per campaign and rotate their signers, but their payout wallets stay the same. On mainnet, one kit's fee wallet linked four victims whose spenders and operators were all different. Chain reads go through Tatum's gateways with one key, and each memory is stamped with the block of the chain it judged, read through Tatum at write time.
 
 - Live demo: https://postmortem-production-1cd2.up.railway.app
-- Demo video: https://youtu.be/p02M6iydamc
-- Write-up: https://x.com/Rav3nlaud3/status/2111791707888951348
 - MCP endpoint: `https://postmortem-production-1cd2.up.railway.app/mcp`
+- Total Recall: [submission sheet](docs/TOTAL_RECALL.md) · [blog draft](docs/BLOG.md) · demo video: *add link after upload*
+- Graph Hacks (the original Postmortem): [demo video](https://youtu.be/p02M6iydamc) · [write-up](https://x.com/Rav3nlaud3/status/2111791707888951348)
 
 ## Why a graph
 
