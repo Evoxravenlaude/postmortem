@@ -25,6 +25,16 @@ And before it judges any spender, it recalls. `who_can_spend` calls `check_recor
 
 `check_record` folds everything memory holds about one address into a credibility score, 100 for a clean record down to 0 for a drainer. It is a tool for the agent, an MCP tool for Claude or Cursor, a REST route, and a text box in the UI.
 
+## What it found on day one
+
+I pointed it at the July 999,999 USDT approval-phishing drain. The victim's USDT left in one `multicall`, split 20/80 between two wallets. The 20% went to `0xf84c…8d93`.
+
+Then I ran the next victim. Different spender contract, freshly deployed. Different operator signing the pull. Postmortem's spender record said nothing; it had never seen that contract. But the money landed in `0xf84c…8d93` again, and memory knew that wallet.
+
+That is a drainer kit's fee wallet. The kit deploys a new contract per campaign and rotates the wallets that sign. It does not rotate where its cut goes. So memory now records three addresses for every pull, each with a role: the spender, the payout wallet, the operator. Four victims in, the fee wallet reads "received pulled funds from 4 drained wallets", credibility 0/100, and every new analysis opens with *the pulled funds went to 0xf84c…8d93, which has a record. Same drainer.*
+
+The first version of the record would have missed all of this. It tracked the contract, and contracts are the cheapest thing a drainer has.
+
 ## Why Walrus, and why Tatum
 
 A database would have done the remembering. It would not have done the proving. Each memory is a Walrus blob with a public id. The claim "Postmortem judged this address a drainer on November 7" is checkable by anyone who opens the blob, and the memory outlives the server that wrote it. I keep a local ledger of blob ids as an index, nothing more.
@@ -36,7 +46,8 @@ Tatum does two jobs with one key. It moves the agent's chain reads (allowance, `
 ## What I learned
 
 - Memory text should be written for two readers. The embedding reads the sentence; the code reads the JSON. Trying to make one text serve both badly serves both.
-- Idempotency keys matter more than they look. Re-running a wallet must not double-count its drainer. The report id is the key.
+- Idempotency keys matter more than they look. Re-running a wallet must not double-count its drainer. The key is chain + wallet + address + role, and the record keeps one judgment per wallet.
+- Not every transfer someone else signed is theft. Zero-value `transferFrom` calls are address poisoning: fake history planted to be copy-pasted later. Counted as pulls, they gave throwaway wallets a record they did not earn.
 - Credibility needs a floor and a ceiling, and the penalties need to be lopsided. One pull should cost more than ten clean appearances can buy back.
 - A mock that behaves like the real thing is what makes the tests and the local demo honest. The UI says which one is running.
 
@@ -44,6 +55,6 @@ Tatum does two jobs with one key. It moves the agent's chain reads (allowance, `
 
 One instance's memory is one merchant court. The obvious next step is the fair itself: a shared namespace that many Postmortem instances write to, so a drainer caught anywhere is known everywhere. Walrus makes that a configuration change, not an architecture change.
 
-The chain remembers transactions. Now the agent remembers judgments.
+Drainers rotate contracts and signers. They can't rotate where the money goes. The chain remembers transactions; now the agent remembers judgments.
 
-Code: github.com/Evoxravenlaude/postmortem · Live: `<Railway URL>`
+Code: https://github.com/Evoxravenlaude/postmortem · Live: https://postmortem-production-1cd2.up.railway.app
