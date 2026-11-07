@@ -21,7 +21,7 @@ Postmortem Remembers gives a wallet-forensics agent long-term memory on Walrus: 
 - New in this build: the report and one record per spender are written to Walrus Memory through `@mysten-incubation/memwal` (`rememberAndWait`, idempotency key = report id). Two namespaces: `incidents`, `counterparties`.
 - `who_can_spend` now recalls every spender's record before scoring it. A spender with a record of pulling funds gets +2 risk and the reason "has a record: seen in N prior postmortems across M wallets; pulled funds K times".
 - `check_record` folds every memory about one address into a credibility score (100 clean to 0 drainer); it is a tool for the agent, an MCP tool for any client, a REST route (`/api/record/:address`) and a form in the UI.
-- Tatum: `TATUM_API_KEY` routes the EVM reads (allowance, isApprovedForAll, Permit2) on six chains through Tatum gateways, and `sui_getLatestCheckpointSequenceNumber` on Tatum's Sui gateway stamps every memory with the checkpoint current at write time.
+- Tatum: `TATUM_API_KEY` routes the EVM reads (allowance, isApprovedForAll, Permit2) on six chains through Tatum gateways, and the same gateway's `eth_blockNumber` stamps every memory with the block of the chain it judged, at write time.
 - Memory text is one plain sentence plus the exact record as JSON, so semantic recall and exact parsing both work.
 - Without keys the SDK mock runs; the UI shows which mode is live.
 
@@ -40,7 +40,7 @@ After: the second wallet's analysis opens with the drainer's record. The memory 
 
 ## Demo video shot list (2–3 min)
 
-1. Header pills: `memory: Walrus mainnet · Sui stamp via Tatum`. (5 s)
+1. Header pills: `memory: Walrus mainnet · block stamp via Tatum`. (5 s)
 2. Run a drained wallet. Steps appear; `write_postmortem` data shows `memory.incident` and `memory.counterparties` blob ids. (40 s)
 3. Memory panel: the new rows, click one blob → Walruscan. (15 s)
 4. Check record on the drainer → credibility, pulls, wallets. (15 s)

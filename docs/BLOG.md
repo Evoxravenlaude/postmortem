@@ -31,7 +31,7 @@ A database would have done the remembering. It would not have done the proving. 
 
 Each memory is one plain sentence followed by the exact record as JSON. The sentence is what recall searches by meaning; the JSON is what scoring parses. Nothing in the score is approximate.
 
-Tatum does two jobs. One key moves the agent's chain reads (allowance, `isApprovedForAll`, Permit2, on six chains) onto Tatum gateways instead of public nodes that rate-limit. And Tatum's Sui gateway gives me `sui_getLatestCheckpointSequenceNumber`, so every memory is stamped with the Sui checkpoint current at the moment it was written. A record is placed in time against the chain Walrus settles on.
+Tatum does two jobs with one key. It moves the agent's chain reads (allowance, `isApprovedForAll`, Permit2, on six chains) onto Tatum gateways instead of public nodes that rate-limit. And it stamps every memory with the block number of the chain it judged, read at the moment of writing. A record says not just "judged a drainer on November 7" but "judged at Ethereum block 26,360,537", a point in the chain's own history anyone can check.
 
 ## What I learned
 

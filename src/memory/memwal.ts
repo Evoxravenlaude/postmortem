@@ -8,7 +8,7 @@
 import { MemWal, MemWalMock } from "@mysten-incubation/memwal";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { suiCheckpoint } from "../sources/tatum.js";
+import { blockStamp } from "../sources/tatum.js";
 
 export const NS = { incidents: "incidents", counterparties: "counterparties" } as const;
 type Ns = (typeof NS)[keyof typeof NS];
@@ -25,7 +25,7 @@ export interface MemoryRecord {
   reasons?: string[];
   report_id?: string;
   at: string; // ISO
-  sui_checkpoint?: string | null;
+  block?: number | null; // chain block at write time, via Tatum
 }
 
 export interface MemoryEntry extends MemoryRecord {
@@ -99,7 +99,7 @@ export function parse(text: string): MemoryRecord | null {
 }
 
 export async function remember(ns: Ns, rec: MemoryRecord, opts: { idempotencyKey?: string } = {}): Promise<MemoryEntry> {
-  rec.sui_checkpoint = rec.sui_checkpoint ?? (await suiCheckpoint());
+  rec.block = rec.block ?? (await blockStamp(rec.chain));
   const text = render(rec);
   const c = get();
   const r = await c.rememberAndWait(text, ns, { idempotencyKey: opts.idempotencyKey, timeoutMs: 45_000 } as any);

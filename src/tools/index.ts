@@ -613,11 +613,11 @@ const check_record = defineTool({
 // ---------------------------------------------------------------- memory_ledger
 const memory_ledger = defineTool({
   name: "memory_ledger",
-  description: "What Postmortem has remembered: every incident and counterparty record written to Walrus Memory, newest first, with its blob id and the Sui checkpoint current when it was written.",
+  description: "What Postmortem has remembered: every incident and counterparty record written to Walrus Memory, newest first, with its blob id and the block of the judged chain at write time (via Tatum).",
   shape: { limit: z.number().int().min(1).max(200).optional().describe("Default 50") },
   async run({ limit }) {
     const all = ledger();
-    const items = all.slice(0, limit ?? 50).map((e) => ({ blob_id: e.blob_id, namespace: e.namespace, kind: e.kind, chain: e.chain, wallet: e.wallet, address: e.address, verdict: e.verdict, at: e.at, sui_checkpoint: e.sui_checkpoint, mode: e.mode, text: e.text.split("\n")[0] }));
+    const items = all.slice(0, limit ?? 50).map((e) => ({ blob_id: e.blob_id, namespace: e.namespace, kind: e.kind, chain: e.chain, wallet: e.wallet, address: e.address, verdict: e.verdict, at: e.at, block: e.block, mode: e.mode, text: e.text.split("\n")[0] }));
     const cps = all.filter((e) => e.kind === "counterparty").length;
     return { summary: `${all.length} memory record(s): ${all.length - cps} incident(s), ${cps} counterparty record(s), mode ${memoryMode()}.`, data: { total: all.length, items }, evidence: { cypher: [], paths: [] } };
   },

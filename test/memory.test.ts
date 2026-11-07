@@ -59,8 +59,24 @@ describe("Walrus Memory layer (mock)", () => {
     expect(tools.TOOLS.map((t) => t.name)).toContain("check_record");
   });
 
-  it("stamps records with a Sui checkpoint only when Tatum is configured", async () => {
+  it("stamps records with the chain block only when Tatum is configured", async () => {
     const e = await mem.remember(mem.NS.incidents, { kind: "incident", chain: "ethereum", wallet: "0xddd", reasons: [], at: "2026-11-07T00:00:00Z" });
-    expect(e.sui_checkpoint).toBeNull();
+    expect(e.block).toBeNull();
+  });
+
+  it("reads the block stamp through the Tatum gateway with the key header", async () => {
+    process.env.TATUM_API_KEY = "test-key";
+    const { blockStamp } = await import("../src/sources/tatum.js");
+    let seen: any = null;
+    const fake = (async (url: string, init: any) => {
+      seen = { url, key: init.headers["x-api-key"], body: JSON.parse(init.body) };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: "0x1923cd9" }), { status: 200 });
+    }) as any;
+    expect(await blockStamp("base", fake)).toBe(26361049);
+    expect(seen.url).toBe("https://base-mainnet.gateway.tatum.io/");
+    expect(seen.key).toBe("test-key");
+    expect(seen.body.method).toBe("eth_blockNumber");
+    expect(await blockStamp("solana", fake)).toBeNull();
+    delete process.env.TATUM_API_KEY;
   });
 });

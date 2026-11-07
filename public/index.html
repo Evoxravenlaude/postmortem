@@ -186,7 +186,7 @@ fetch("/api/health").then((r) => r.json()).then((h) => {
     pill(h.falkordb ? "ok" : "bad", "FalkorDB " + (h.falkordb ? "connected" : "down")),
     pill(h.llm ? "ok" : "bad", h.llm ? "agent: " + h.llm.model : "no LLM key: autopilot only"),
     pill("", h.tools.length + " graph tools"),
-    pill(h.memory && h.memory.mode === "live" ? "ok" : "", "memory: " + (h.memory && h.memory.mode === "live" ? "Walrus mainnet" : "mock (no MEMWAL key)") + (h.memory && h.memory.tatum ? " · Sui stamp via Tatum" : "")),
+    pill(h.memory && h.memory.mode === "live" ? "ok" : "", "memory: " + (h.memory && h.memory.mode === "live" ? "Walrus mainnet" : "mock (no MEMWAL key)") + (h.memory && h.memory.tatum ? " · block stamp via Tatum" : "")),
   );
   loadMemory();
   $("#llmnote").textContent = h.llm ? "the agent picks tools itself" : "needs an LLM key on the server";
@@ -350,7 +350,7 @@ async function loadMemory() {
       const b = document.createElement("span"); b.className = "b";
       const bid = short(e.blob_id);
       if (e.mode === "live") { const a = document.createElement("a"); a.href = "https://walruscan.com/mainnet/blob/" + e.blob_id; a.target = "_blank"; a.rel = "noopener"; a.textContent = "blob " + bid; b.append(a); } else b.textContent = "mock " + bid;
-      if (e.sui_checkpoint) b.append(" · sui #" + e.sui_checkpoint);
+      if (e.block) b.append(" · " + e.chain + " #" + e.block.toLocaleString("en-US"));
       row.append(k, t, b); box.append(row);
     }
   } catch { /* server down */ }

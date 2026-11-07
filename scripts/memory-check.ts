@@ -1,12 +1,12 @@
 // Live check for Walrus Memory + Tatum. Run on a machine with internet, with .env filled:
 //   npx tsx --env-file=.env scripts/memory-check.ts
-// Writes one incident memory, recalls it, prints the blob id and the Sui checkpoint. Nothing else.
+// Writes one incident memory, recalls it, prints the blob id and the block stamp. Nothing else.
 import { NS, health, memoryMode, recall, remember } from "../src/memory/memwal.js";
-import { suiCheckpoint, tatumEnabled } from "../src/sources/tatum.js";
+import { blockStamp, tatumEnabled } from "../src/sources/tatum.js";
 
 const at = new Date().toISOString();
 console.log("tatum key:", tatumEnabled() ? "set" : "missing");
-console.log("sui checkpoint:", (await suiCheckpoint()) ?? "none (no key or gateway unreachable)");
+console.log("ethereum block via Tatum:", (await blockStamp("ethereum")) ?? "none (no key or gateway unreachable)");
 
 const e = await remember(NS.incidents, { kind: "incident", chain: "ethereum", wallet: "0x0000000000000000000000000000000000000000", reasons: ["memory check from " + at.slice(0, 19)], at }, { idempotencyKey: "memory-check-" + at });
 console.log("mode:", memoryMode());

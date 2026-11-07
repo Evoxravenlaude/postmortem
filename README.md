@@ -2,7 +2,7 @@
 
 **Why did my money move, and has this spender done it before?** Postmortem loads a wallet's on-chain history into a FalkorDB graph and lets an agent walk it. It tells you which outflows you signed, which were swaps, and which were **pulled by someone else through an approval you gave months ago**. It shows the exact graph path behind each answer, follows the money to where it came to rest, scores what is still exposed, and then acts: it drafts the revoke transactions and writes the postmortem back into the graph.
 
-Postmortem started at Graph Hacks (FalkorDB x WeMakeDevs). **Postmortem Remembers**, built for Tatum's Total Recall (Walrus Memory), gives it long-term memory: every postmortem is written to Walrus, and before the agent judges any spender it checks the spender's record. A drainer that emptied one wallet last week is a drainer on the next wallet it appears in. Chain reads go through Tatum's gateways with one key, and each memory is stamped with the Sui checkpoint current when it was written.
+Postmortem started at Graph Hacks (FalkorDB x WeMakeDevs). **Postmortem Remembers**, built for Tatum's Total Recall (Walrus Memory), gives it long-term memory: every postmortem is written to Walrus, and before the agent judges any spender it checks the spender's record. A drainer that emptied one wallet last week is a drainer on the next wallet it appears in. Chain reads go through Tatum's gateways with one key, and each memory is stamped with the block of the chain it judged, read through Tatum at write time.
 
 - Live demo: https://postmortem-production-1cd2.up.railway.app
 - Demo video: https://youtu.be/p02M6iydamc
@@ -50,7 +50,7 @@ graph LR
 | `plan_revokes` | **Acts.** Drafts the exact revoke calls (`approve(spender, 0)`, `setApprovalForAll(op, false)`, `Permit2.approve(token, spender, 0, 0)`) and records each as an `(:Action)` node linked to the wallet and spender. Nothing is signed or sent. |
 | `write_postmortem` | **Acts.** Writes the report (what happened, pulls with their approval, what is still exposed, the fixes), saves it as a `(:Report)` node, and **remembers it**: the incident and one record per spender go to Walrus Memory. |
 | `check_record` | **Memory.** Everything Walrus holds about one address, from every wallet Postmortem has ever looked at, folded into a credibility score (100 clean, 0 drainer). `who_can_spend` calls this for every spender and raises the risk of anyone with a record. |
-| `memory_ledger` | **Memory.** The index of what was written: blob ids, namespaces, Sui checkpoints. |
+| `memory_ledger` | **Memory.** The index of what was written: blob ids, namespaces, block stamps. |
 
 ### Memory: the Law Merchant's record check
 
@@ -63,7 +63,7 @@ Postmortem's memory is that record, held on Walrus so it outlives any one server
 - **Recall before verdict.** `who_can_spend` calls `check_record` on every spender. A record of pulling funds adds to the risk score and the reasons list, and the UI says so: "0x1111… has a record: seen in 2 prior postmortems across 2 wallets; pulled funds 2 times".
 - **Credibility** = 100, minus 40 per pull verdict, 35 per explorer-tagged, 15 per high, 5 per medium, 10 per extra wallet it appears in; plus 5 per clean and 2 per low. Clamped 0 to 100.
 - **Idempotent writes.** The report id is the idempotency key, so re-running a wallet does not double-count its spenders.
-- **Stamped in time.** With a Tatum key, every write carries `sui_checkpoint`, the latest Sui checkpoint at write time, so a memory can be placed against the chain Walrus settles on.
+- **Stamped in time.** With a Tatum key, every write carries `block`, the latest block of the chain it judged, read through the same Tatum gateway. A record says "judged at Ethereum block 26,360,537", a point anyone can check.
 - **No keys, still works.** Without `MEMWAL_*` the SDK's in-memory mock runs. The header pill says `memory: mock`. With them, it says `Walrus mainnet` and every ledger row links to its blob on Walruscan.
 
 ### How it decides
@@ -134,16 +134,16 @@ FalkorDB Cloud works too: set `FALKORDB_URL=rediss://default:<password>@<host>:<
 ```bash
 # 1. No keys: the mock
 npm test
-#   see: test/memory.test.ts, 5 passed (render/parse, remember+recall, credibility, tools, Sui stamp)
+#   see: test/memory.test.ts, 6 passed (render/parse, remember+recall, credibility, tools, block stamp, Tatum gateway call)
 
 # 2. Live keys (memory.walrus.xyz → account + delegate key; dashboard.tatum.io → API key)
 cp .env.example .env   # fill MEMWAL_ACCOUNT_ID, MEMWAL_PRIVATE_KEY, TATUM_API_KEY
 npm run dev
-#   see: header pill "memory: Walrus mainnet · Sui stamp via Tatum"
+#   see: header pill "memory: Walrus mainnet · block stamp via Tatum"
 
 # 3. Run a postmortem on a drained wallet, then check a spender
 #   see: write_postmortem step data.memory = { incident: <blob id>, counterparties: [...] }
-#   see: Memory panel lists each write with "blob …" linking to walruscan.com and "sui #<checkpoint>"
+#   see: Memory panel lists each write with "blob …" linking to walruscan.com and "ethereum #<block>"
 #   Type the drainer's address into "Check an address's record" → "pulled funds 1 time · credibility 60/100"
 
 # 4. Run a second wallet the same drainer hit
@@ -178,7 +178,7 @@ src/
   tools/index.ts       the eleven tools (nine graph, two memory)
   graph/               FalkorDB connection, ingest, path views
   memory/memwal.ts     Walrus Memory: remember, recall, the record check, the local ledger
-  sources/             Blockscout API v2, JSON-RPC readers, Tatum gateways + Sui checkpoint
+  sources/             Blockscout API v2, JSON-RPC readers, Tatum gateways + block stamp
 public/index.html      the UI (vendor libraries served from /vendor)
 scripts/smoke.ts       live connectivity check
 test/                  synthetic fixtures and tests
@@ -187,7 +187,7 @@ docs/                  demo plan and submission notes
 
 ## Stack
 
-FalkorDB (Cypher, range indexes, `shortestPath`, `algo.pageRank`) · Walrus Memory (`@mysten-incubation/memwal`) · Tatum RPC gateways (EVM + Sui) · Node 22 + TypeScript · Hono · MCP TypeScript SDK · Blockscout API v2 · vis-network for the path view.
+FalkorDB (Cypher, range indexes, `shortestPath`, `algo.pageRank`) · Walrus Memory (`@mysten-incubation/memwal`) · Tatum RPC gateways (six EVM chains) · Node 22 + TypeScript · Hono · MCP TypeScript SDK · Blockscout API v2 · vis-network for the path view.
 
 ## License
 
