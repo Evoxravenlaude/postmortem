@@ -7,7 +7,7 @@ import type { FetchLike } from "../sources/blockscout.js";
 import { PERMIT2, Rpc } from "../sources/rpc.js";
 import type { PathView, ToolResult } from "../types.js";
 import { fmtAmount, fmtUsd, isAddress, isoOf, lc, pad32, short, toUnits } from "../util.js";
-import { NS, ledger, memoryMode, recordOf, remember } from "../memory/memwal.js";
+import { NS, ledger, memoryMode, recordOf, remember, type MemoryRecord } from "../memory/memwal.js";
 
 export interface ToolCtx {
   fetchImpl?: FetchLike;
@@ -372,11 +372,19 @@ const trace_funds = defineTool({
       { w, tok, from },
     );
     let expanded = 0;
+    const skipped: string[] = [];
     for (let hop = 1; hop < depth && frontier.length; hop++) {
       const next: typeof frontier = [];
       for (const f of frontier.slice(0, 6)) {
         if (f.addr === w) continue;
-        await expandOutflows(c, f.addr, tok, f.ts, { fetchImpl: ctx.fetchImpl });
+        // A busy hop (an exchange, a mixer, a drainer's sweep wallet) can time out at the explorer.
+        // Stop there and keep the path so far, instead of failing the whole trace.
+        try {
+          await expandOutflows(c, f.addr, tok, f.ts, { fetchImpl: ctx.fetchImpl });
+        } catch {
+          skipped.push(f.addr);
+          continue;
+        }
         expanded++;
         const onward = await qq.ro<{ addr: string; ts: number; amt: number }>(
           `MATCH (a:Address {addr:$a})-[s:SENT]->(d:Address) WHERE s.token = $tok AND s.ts >= $ts
@@ -407,8 +415,9 @@ const trace_funds = defineTool({
         paths.length === 0
           ? `No outflows of that token from ${short(w)} to follow.`
           : `Followed the token ${depth} hop(s) and expanded ${expanded} recipient(s). Longest path: ${paths[0].p.edges.length} hops.` +
-            (named.length ? ` It reaches ${[...new Set(named.map((n) => n.name ?? n.tags?.[0]))].slice(0, 4).join(", ")}.` : " None of the end points carry an explorer label."),
-      data: { ends, expanded },
+            (named.length ? ` It reaches ${[...new Set(named.map((n) => n.name ?? n.tags?.[0]))].slice(0, 4).join(", ")}.` : " None of the end points carry an explorer label.") +
+            (skipped.length ? ` Stopped at ${skipped.map(short).join(", ")}: too busy for the explorer to list in time, usually an exchange or a sweep wallet.` : ""),
+      data: { ends, expanded, skipped },
       evidence: { cypher: qq.log, paths: [mergeViews("Where the token went", paths.map((r) => pathView("", r.p)))] },
     };
   },
@@ -586,15 +595,17 @@ const write_postmortem = defineTool({
       ...pulls.map((p: any) => `${p.approval?.spenderName ?? short(p.approval?.spender ?? p.to)} pulled ${fmtAmount(p.amount)} ${p.symbol}`),
       ...risky.slice(0, 5).map((x: any) => `${x.spenderName ?? short(x.spender)} rated ${x.risk} for ${x.symbol}`),
     ];
-    const inc = await remember(NS.incidents, { kind: "incident", chain: chainOf(c).key, wallet: w, reasons: findings.length ? findings : ["no pulls, nothing exposed"], report_id: id, at }, { idempotencyKey: id });
-    written.push({ blob_id: inc.blob_id, kind: "incident", mode: inc.mode });
+    // The incident write runs alongside the counterparty batches below.
+    const incP = remember(NS.incidents, { kind: "incident", chain: chainOf(c).key, wallet: w, reasons: findings.length ? findings : ["no pulls, nothing exposed"], report_id: id, at }, { idempotencyKey: id });
+    // Collect every record first, then write them all at once: each Walrus write waits for its blob,
+    // so one at a time took minutes on a drained wallet.
     const seen = new Set<string>();
+    const jobs: { rec: MemoryRecord; key: string }[] = [];
     for (const p of pulls as any[]) {
       const sp = lc(p.approval?.spender ?? p.to);
       if (seen.has(sp)) continue;
       seen.add(sp);
-      const e = await remember(NS.counterparties, { kind: "counterparty", role: "spender", chain: chainOf(c).key, wallet: w, address: sp, verdict: "pulled", pulls: 1, pulled_usd: p.usdNow ?? 0, symbol: p.symbol, reasons: [p.approval ? `via ${p.approval.unlimited ? "unlimited " : ""}approval granted ${p.approval.grantedAt.slice(0, 10)}` : "no matching approval"], report_id: id, at }, { idempotencyKey: `${id}:${sp}` });
-      written.push({ blob_id: e.blob_id, kind: "counterparty", address: sp, mode: e.mode });
+      jobs.push({ key: `${id}:${sp}`, rec: { kind: "counterparty", role: "spender", chain: chainOf(c).key, wallet: w, address: sp, verdict: "pulled", pulls: 1, pulled_usd: p.usdNow ?? 0, symbol: p.symbol, reasons: [p.approval ? `via ${p.approval.unlimited ? "unlimited " : ""}approval granted ${p.approval.grantedAt.slice(0, 10)}` : "no matching approval"], report_id: id, at } });
     }
     // The payout and operator wallets behind each pull: the part of a drainer that does not rotate.
     for (const p of pulls as any[]) {
@@ -602,8 +613,7 @@ const write_postmortem = defineTool({
         const a2 = addr ? lc(addr) : "";
         if (!a2 || a2 === w || seen.has(a2)) continue;
         seen.add(a2);
-        const e = await remember(NS.counterparties, { kind: "counterparty", role, chain: chainOf(c).key, wallet: w, address: a2, verdict: "pulled", pulled_usd: p.usdNow ?? 0, symbol: p.symbol, reasons: [`${role === "payout" ? "received" : "signed"} a pull of ${fmtAmount(p.amount)} ${p.symbol} on ${String(p.when).slice(0, 10)}`], report_id: id, at }, { idempotencyKey: `${id}:${a2}` });
-        written.push({ blob_id: e.blob_id, kind: "counterparty", address: a2, mode: e.mode });
+        jobs.push({ key: `${id}:${a2}`, rec: { kind: "counterparty", role, chain: chainOf(c).key, wallet: w, address: a2, verdict: "pulled", pulled_usd: p.usdNow ?? 0, symbol: p.symbol, reasons: [`${role === "payout" ? "received" : "signed"} a pull of ${fmtAmount(p.amount)} ${p.symbol} on ${String(p.when).slice(0, 10)}`], report_id: id, at } });
       }
     }
     for (const x of risky as any[]) {
@@ -611,11 +621,25 @@ const write_postmortem = defineTool({
       if (seen.has(sp)) continue;
       seen.add(sp);
       const tagged = x.reasons.some((r: string) => r.startsWith("spender tagged"));
-      const e = await remember(NS.counterparties, { kind: "counterparty", chain: chainOf(c).key, wallet: w, address: sp, verdict: tagged ? "tagged" : x.risk, symbol: x.symbol, reasons: x.reasons.filter((r: string) => !r.startsWith("memory:")), report_id: id, at }, { idempotencyKey: `${id}:${sp}` });
-      written.push({ blob_id: e.blob_id, kind: "counterparty", address: sp, mode: e.mode });
+      jobs.push({ key: `${id}:${sp}`, rec: { kind: "counterparty", role: "spender", chain: chainOf(c).key, wallet: w, address: sp, verdict: tagged ? "tagged" : x.risk, symbol: x.symbol, reasons: x.reasons.filter((r: string) => !r.startsWith("memory:")), report_id: id, at } });
+    }
+    const failed: string[] = [];
+    for (let i = 0; i < jobs.length; i += 6) {
+      const batch = jobs.slice(i, i + 6);
+      const res = await Promise.allSettled(batch.map((j) => remember(NS.counterparties, j.rec, { idempotencyKey: j.key })));
+      res.forEach((r, k) => {
+        if (r.status === "fulfilled") written.push({ blob_id: r.value.blob_id, kind: "counterparty", address: batch[k].rec.address, mode: r.value.mode });
+        else failed.push(batch[k].rec.address ?? "?");
+      });
+    }
+    try {
+      const inc = await incP;
+      written.unshift({ blob_id: inc.blob_id, kind: "incident", mode: inc.mode });
+    } catch {
+      failed.push("incident");
     }
     return {
-      summary: `Postmortem written and saved to the graph as ${id}. ${written.length} memory record(s) written to Walrus Memory (${memoryMode()}).`,
+      summary: `Postmortem written and saved to the graph as ${id}. ${written.length} memory record(s) written to Walrus Memory (${memoryMode()}).` + (failed.length ? ` ${failed.length} write(s) failed and can be retried by running again.` : ""),
       data: { id, markdown: md, memory: written },
       evidence: { cypher: [...ov.evidence.cypher, ...out.evidence.cypher, ...exp.evidence.cypher, ...qq.log], paths: [...out.evidence.paths, ...exp.evidence.paths] },
     };
